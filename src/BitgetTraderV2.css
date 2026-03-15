@@ -20,6 +20,7 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 15px; /* Espacio entre los badges */
   padding: 0 10px;
 }
 
@@ -580,3 +581,10 @@
   color: #8b949e;
   font-family: monospace;
 }
+
+.remote-mode-badge {
+  background: #0d1117;
+  color: #8250df;
+  border-color: #8250df;
+}
+

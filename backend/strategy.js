@@ -1,32 +1,16 @@
-// c:\Users\ANTHONY\Downloads\sistema_crip\src\strategy.ts
-import { SMA, RSI, MACD, ATR } from 'technicalindicators';
-import type { Candle } from './marketData';
+// backend/strategy.js
+const { SMA, RSI, MACD, ATR } = require('technicalindicators');
 
-export type Trend = 'BULLISH' | 'BEARISH' | 'NEUTRAL';
-export type VolumeConfirmation = 'CONFIRMATION' | 'DIVERGENCE' | 'NO_CONFIRMATION';
-export type IndicatorSignal = 'BULLISH' | 'BEARISH' | 'NEUTRAL';
-
-export interface TimeframeAnalysis {
-  trend: Trend;
-  volume: VolumeConfirmation;
-  sma: IndicatorSignal;
-  rsi: IndicatorSignal;
-  macd: IndicatorSignal;
-  atr: number;
-  score: number;
-  timeframeBias: IndicatorSignal; // BULLISH, BEARISH, NEUTRAL
-  close: number; // Last close price for this timeframe
-}
-
+// Configuración
 const MIN_CANDLES = 50;
 
-// Helper to get data from candles in oldest-to-newest order
-const getCloses = (candles: Candle[]): number[] => candles.map(c => c.close).reverse();
-const getHighs = (candles: Candle[]): number[] => candles.map(c => c.high).reverse();
-const getLows = (candles: Candle[]): number[] => candles.map(c => c.low).reverse();
-const getVolumes = (candles: Candle[]): number[] => candles.map(c => c.volume).reverse();
+// Helpers
+const getCloses = (candles) => candles.map(c => c.close).reverse();
+const getHighs = (candles) => candles.map(c => c.high).reverse();
+const getLows = (candles) => candles.map(c => c.low).reverse();
+const getVolumes = (candles) => candles.map(c => c.volume).reverse();
 
-const getTrend = (closes: number[]): Trend => {
+const getTrend = (closes) => {
     if (closes.length < 20) return 'NEUTRAL';
     const lastClose = closes[closes.length - 1];
     const twentyClosesAgo = closes[closes.length - 20];
@@ -35,7 +19,7 @@ const getTrend = (closes: number[]): Trend => {
     return 'NEUTRAL';
 };
 
-const getVolumeConfirmation = (trend: Trend, closes: number[], volumes: number[]): VolumeConfirmation => {
+const getVolumeConfirmation = (trend, closes, volumes) => {
     if (volumes.length < 10) return 'NO_CONFIRMATION';
     const avgVolume = volumes.slice(-10).reduce((a, b) => a + b, 0) / 10;
     const lastVolume = volumes[volumes.length - 1];
@@ -48,9 +32,10 @@ const getVolumeConfirmation = (trend: Trend, closes: number[], volumes: number[]
     return 'NO_CONFIRMATION';
 };
 
-export const getSignalForTimeframe = (candles: Candle[]): TimeframeAnalysis => {
-  const neutralState: TimeframeAnalysis = { trend: 'NEUTRAL', volume: 'NO_CONFIRMATION', sma: 'NEUTRAL', rsi: 'NEUTRAL', macd: 'NEUTRAL', atr: 0, score: 0, timeframeBias: 'NEUTRAL', close: 0 };
-  if (candles.length < MIN_CANDLES) {
+const getSignalForTimeframe = (candles) => {
+  const neutralState = { trend: 'NEUTRAL', volume: 'NO_CONFIRMATION', sma: 'NEUTRAL', rsi: 'NEUTRAL', macd: 'NEUTRAL', atr: 0, score: 0, timeframeBias: 'NEUTRAL', close: 0 };
+  
+  if (!candles || candles.length < MIN_CANDLES) {
     return neutralState;
   }
 
@@ -62,12 +47,12 @@ export const getSignalForTimeframe = (candles: Candle[]): TimeframeAnalysis => {
 
   let score = 0;
 
-  // 1. Trend (Market Structure)
+  // 1. Trend
   const trend = getTrend(closes);
   if (trend === 'BULLISH') score++;
   if (trend === 'BEARISH') score--;
 
-  // 2. Volume Confirmation
+  // 2. Volume
   const volume = getVolumeConfirmation(trend, closes, volumes);
   if (volume === 'CONFIRMATION') {
       if (trend === 'BULLISH') score++;
@@ -79,7 +64,7 @@ export const getSignalForTimeframe = (candles: Candle[]): TimeframeAnalysis => {
   const sma100 = SMA.calculate({ period: 100, values: closes });
   const lastSma50 = sma50[sma50.length - 1];
   const lastSma100 = sma100[sma100.length - 1];
-  let smaSignal: IndicatorSignal = 'NEUTRAL';
+  let smaSignal = 'NEUTRAL';
   if (lastSma50 > lastSma100) {
       smaSignal = 'BULLISH';
       score++;
@@ -91,7 +76,7 @@ export const getSignalForTimeframe = (candles: Candle[]): TimeframeAnalysis => {
   // 4. RSI
   const rsiValues = RSI.calculate({ period: 14, values: closes });
   const lastRsi = rsiValues[rsiValues.length - 1];
-  let rsiSignal: IndicatorSignal = 'NEUTRAL';
+  let rsiSignal = 'NEUTRAL';
   if (lastRsi > 55) {
       rsiSignal = 'BULLISH';
       score++;
@@ -101,17 +86,10 @@ export const getSignalForTimeframe = (candles: Candle[]): TimeframeAnalysis => {
   }
 
   // 5. MACD
-  const macdInput = {
-    values: closes,
-    fastPeriod: 12,
-    slowPeriod: 26,
-    signalPeriod: 9,
-    SimpleMAOscillator: false,
-    SimpleMASignal: false
-  };
+  const macdInput = { values: closes, fastPeriod: 12, slowPeriod: 26, signalPeriod: 9, SimpleMAOscillator: false, SimpleMASignal: false };
   const macdValues = MACD.calculate(macdInput);
   const lastMacd = macdValues[macdValues.length - 1];
-  let macdSignal: IndicatorSignal = 'NEUTRAL';
+  let macdSignal = 'NEUTRAL';
   if (lastMacd && lastMacd.MACD !== undefined && lastMacd.signal !== undefined) {
     if (lastMacd.MACD > lastMacd.signal) {
         macdSignal = 'BULLISH';
@@ -122,24 +100,46 @@ export const getSignalForTimeframe = (candles: Candle[]): TimeframeAnalysis => {
     }
   }
   
-  // 6. ATR for volatility
+  // 6. ATR
   const atrInput = { high: highs, low: lows, close: closes, period: 14 };
   const atrValues = ATR.calculate(atrInput);
   const lastAtr = atrValues[atrValues.length - 1] || 0;
 
-  let timeframeBias: IndicatorSignal = 'NEUTRAL';
+  let timeframeBias = 'NEUTRAL';
   if (score >= 1) timeframeBias = 'BULLISH';
   if (score <= -1) timeframeBias = 'BEARISH';
 
-  return {
-    trend,
-    volume,
-    sma: smaSignal,
-    rsi: rsiSignal,
-    macd: macdSignal,
-    atr: lastAtr,
-    score,
-    timeframeBias,
-    close: lastClose,
-  };
+  return { trend, volume, sma: smaSignal, rsi: rsiSignal, macd: macdSignal, atr: lastAtr, score, timeframeBias, close: lastClose };
 };
+
+const getFinalSignal = (signals, tradeMode) => {
+  const fourHour = signals['4h'];
+  const oneHour = signals['1h'];
+  const fiveMin = signals['5m'];
+
+  const scoreThreshold = {
+    conservative: 4,
+    balanced: 3,
+    aggressive: 2,
+  }[tradeMode];
+
+  // Volatility Filter
+  const atrThreshold = fiveMin.close * 0.0005; 
+  if (fiveMin.atr > 0 && fiveMin.atr < atrThreshold) {
+      return 'WAIT';
+  }
+
+  // LONG
+  if (fourHour.timeframeBias === 'BULLISH' && oneHour.timeframeBias !== 'BEARISH' && fiveMin.score >= scoreThreshold) {
+    return 'EXECUTE_LONG';
+  }
+
+  // SHORT (Venta en spot si tuviéramos lógica de short, o venta de tenencias)
+  if (fourHour.timeframeBias === 'BEARISH' && oneHour.timeframeBias !== 'BULLISH' && fiveMin.score <= -scoreThreshold) {
+    return 'EXECUTE_SHORT';
+  }
+
+  return 'WAIT';
+};
+
+module.exports = { getSignalForTimeframe, getFinalSignal };

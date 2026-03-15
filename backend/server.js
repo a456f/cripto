@@ -1,8 +1,9 @@
-require('dotenv').config({ path: __dirname + '/../.env' });
 const express = require('express');
-const fs = require('fs');
 const cors = require('cors');
+const fs = require('fs');
+require('dotenv').config({ path: __dirname + '/../.env' });
 const { Anthropic } = require('@anthropic-ai/sdk');
+const BotEngine = require('./botEngine');
 
 const app = express();
 app.use(express.json());
@@ -15,6 +16,13 @@ if (!process.env.CLAUDE_API_KEY) {
 const anthropic = new Anthropic({
     apiKey: process.env.CLAUDE_API_KEY,
 });
+
+// Inicializar el Bot Engine (Singleton)
+const bot = new BotEngine(
+    process.env.BITGET_API_KEY,
+    process.env.BITGET_SECRET_KEY,
+    process.env.BITGET_PASSPHRASE
+);
 
 const TRADES_FILE = './trades.json';
 const POSITIONS_FILE = './positions.json';
@@ -82,6 +90,33 @@ app.get('/api/bitget-assets', async (req, res) => {
 
   }
 })
+
+app.get('/api/historical-candles', async (req, res) => {
+  try {
+    const { symbol = 'BTCUSDT', granularity = '1m', limit = '200' } = req.query;
+    
+    // Bitget API requires the symbol to be in uppercase and granularity to match their format.
+    const apiUrl = `https://api.bitget.com/api/v2/spot/market/candles?symbol=${symbol.toUpperCase()}&granularity=${granularity}&limit=${limit}`;
+    
+    const response = await fetch(apiUrl);
+    if (!response.ok) {
+      throw new Error(`Bitget API error: ${response.statusText}`);
+    }
+    
+    const data = await response.json();
+
+    if (data.code !== '00000') {
+        return res.status(400).json({ error: `Bitget API error: ${data.msg}` });
+    }
+
+    // The candle data is in the 'data' property, and it's newest first.
+    // The frontend can handle reversing if needed.
+    res.json(data.data);
+  } catch (err) {
+    console.error("Historical candles error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 app.post('/api/place-order', async (req, res) => {
     try {
@@ -266,4 +301,37 @@ app.get('/api/status', (req, res) => {
     res.send({ ...botHeartbeat, isAlive });
 });
 
-app.listen(3001, () => console.log('🚀 Servidor de persistencia corriendo en http://localhost:3001'));
+// --- NUEVOS ENDPOINTS PARA CONTROLAR EL BOT DEL BACKEND ---
+
+app.post('/api/bot/start', async (req, res) => {
+    const { tradeMode } = req.body;
+    try {
+        console.log("Cargando datos históricos para el bot...");
+        // El motor del bot se inicia y se le pasa el modo de trading.
+        // El motor es responsable de cargar los datos históricos si es necesario.
+        await bot.start({ tradeMode });
+
+        res.send({ message: 'Bot iniciado en el servidor' });
+    } catch (e) {
+        console.error("Error iniciando bot:", e);
+        res.status(500).send({ error: e.message });
+    }
+});
+
+app.post('/api/bot/stop', (req, res) => {
+    const stopped = bot.stop();
+    if (stopped) res.send({ message: 'Bot detenido' });
+    else res.status(400).send({ message: 'No se pudo detener (¿Posición abierta?)' });
+});
+
+app.get('/api/bot/status', (req, res) => {
+    res.send(bot.getStatus());
+});
+
+// Asegúrate de que el bot se detenga si cierras el servidor
+process.on('SIGINT', () => {
+    bot.stop();
+    process.exit();
+});
+
+app.listen(3001, () => console.log('🚀 Servidor y Bot Engine corriendo en http://localhost:3001'));

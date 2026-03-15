@@ -1,26 +1,14 @@
 // c:\Users\ANTHONY\Downloads\sistema_crip\src\BitgetTraderV2.tsx
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { FiKey, FiLock, FiShield, FiDollarSign, FiActivity, FiTerminal, FiSettings, FiPlay, FiTrendingUp, FiCheckCircle, FiBriefcase, FiTarget, FiInfo, FiCpu, FiList, FiXCircle, FiClock } from 'react-icons/fi';
 import CryptoJS from 'crypto-js';
-import { useBitgetSocket } from './useBitgetSocket';
+import { useBitgetSocket, type WebSocketMessage } from './useBitgetSocket';
 import { processStream, type Candle } from './marketData';
-import { getSignalForTimeframe, type TimeframeAnalysis } from './strategy';
-import { getFinalSignal, type TimeframeSignals } from './signals';
-import { calculatePositionSize } from './riskManager';
 import { placeOrder } from './trader';
-// import { analyzeMarketWithAI } from './claudeService'; // AI logic is replaced by the new strategy
 import './BitgetTraderV2.css';
 
 type BotStatus =
-  | 'IDLE'
-  | 'ANALYZING_MARKET'
-  | 'WAITING_PULLBACK'
-  | 'AI_CONFIRMATION'
-  | 'BUYING'
-  | 'IN_POSITION'
-  | 'TRAILING_ACTIVE'
-  | 'EXITING'
-  | 'ANALYZING';
+  | 'IDLE' | 'ANALYZING' | 'BUYING' | 'IN_POSITION' | 'TRAILING_ACTIVE' | 'EXITING';
 
 
 const BitgetTraderV2: React.FC = () => {
@@ -32,6 +20,7 @@ const BitgetTraderV2: React.FC = () => {
 
   // --- ESTADOS DEL BOT ---
   const [botStatus, setBotStatus] = useState<BotStatus>('IDLE');
+  const [tradeMode, setTradeMode] = useState<'conservative' | 'balanced' | 'aggressive'>('balanced');
   const [logs, setLogs] = useState<string[]>([]);
   const [currentPrice, setCurrentPrice] = useState<number>(0);
   const [trailingStop, setTrailingStop] = useState<number | null>(null);
@@ -41,10 +30,10 @@ const BitgetTraderV2: React.FC = () => {
   const [recentTrades, setRecentTrades] = useState<any[]>([]);
   const [isVerifying, setIsVerifying] = useState(false);
   const currentTaskIdRef = useRef<string | null>(null);
-  const [timeframeAnalyses, setTimeframeAnalyses] = useState<Record<string, TimeframeAnalysis>>({
-    '5m': { trend: 'NEUTRAL', volume: 'NO_CONFIRMATION', sma: 'NEUTRAL', rsi: 'NEUTRAL', macd: 'NEUTRAL', finalSignal: 'NEUTRAL' },
-    '1h': { trend: 'NEUTRAL', volume: 'NO_CONFIRMATION', sma: 'NEUTRAL', rsi: 'NEUTRAL', macd: 'NEUTRAL', finalSignal: 'NEUTRAL' },
-    '4h': { trend: 'NEUTRAL', volume: 'NO_CONFIRMATION', sma: 'NEUTRAL', rsi: 'NEUTRAL', macd: 'NEUTRAL', finalSignal: 'NEUTRAL' },
+  const [timeframeAnalyses, setTimeframeAnalyses] = useState<any>({
+    '5m': {},
+    '1h': {},
+    '4h': {},
   });
 
   // --- REFERENCIAS PARA ESTRATEGIA ---
@@ -52,20 +41,22 @@ const BitgetTraderV2: React.FC = () => {
   const candles5m = useRef<Candle[]>([]);
   const candles1h = useRef<Candle[]>([]);
   const candles4h = useRef<Candle[]>([]);
-  const entryPriceRef = useRef<number>(0);
-  const positionSizeRef = useRef<number>(0);
-  const baseQuantityRef = useRef<number>(0); // Cantidad en BTC
-  const highDuringTradeRef = useRef<number>(0);
-const { lastMessage, connectionStatus } = useBitgetSocket([
-  { instType: 'SPOT', channel: 'candle1m', instId: 'BTCUSDT' }
-]);
-const [isServerAlive, setIsServerAlive] = useState(false);
+  const lastTradeTimestampRef = useRef<number>(0);
+  const tradesTodayCountRef = useRef<number>(0);
+
+  // Usar useMemo para evitar que el socket se reconecte en cada renderizado
+  const socketConfig = useMemo(() => [
+    { instType: 'SPOT' as const, channel: 'candle1m', instId: 'BTCUSDT' }
+  ], []);
+
+  const { lastMessage, connectionStatus } = useBitgetSocket(socketConfig);
+  const [isServerAlive, setIsServerAlive] = useState(false);
   const addLog = (msg: string) => {
     const timeMsg = `[${new Date().toLocaleTimeString()}] ${msg}`;
     setLogs(prev => [timeMsg, ...prev].slice(0, 50));
 
     // Si hay una tarea iniciada, enviamos el log al servidor para el TXT final
-    if (currentTaskIdRef.current) {
+    if (currentTaskIdRef.current && msg.includes("Cierre manual")) { 
       fetch(`http://31.97.253.128:3001/api/positions/${currentTaskIdRef.current}/logs`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -110,10 +101,10 @@ const [isServerAlive, setIsServerAlive] = useState(false);
   // --- MONITOREO: LATIDO DEL BOT ---
   useEffect(() => {
     const checkHeartbeat = () => {
-      fetch('http://31.97.253.128:3001/api/heartbeat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: botStatus, currentPrice, symbol: 'BTCUSDT' })
+      // Solo verificamos si el servidor responde, ya no enviamos el estado desde aquí
+      // porque el estado verdadero vive en el servidor.
+      fetch('http://31.97.253.128:3001/api/status', {
+        method: 'GET',
       })
       .then(() => setIsServerAlive(true))
       .catch(() => setIsServerAlive(false));
@@ -122,15 +113,44 @@ const [isServerAlive, setIsServerAlive] = useState(false);
     checkHeartbeat(); // Verificar al montar
     refreshBalance(); // Cargar balance al inicio
     const hbInterval = setInterval(checkHeartbeat, 10000);
-    const posInterval = setInterval(refreshOpenPositions, 5000); // Refrescar tareas cada 5s
+    // Polling del estado del bot del servidor
+    const botStatusInterval = setInterval(syncBotStatus, 2000); 
+    const posInterval = setInterval(refreshOpenPositions, 5000);
     const balanceInterval = setInterval(refreshBalance, 15000); // Refrescar balance cada 15s
 
     return () => {
       clearInterval(hbInterval);
+      clearInterval(botStatusInterval);
       clearInterval(posInterval);
       clearInterval(balanceInterval);
     };
-  }, [botStatus, currentPrice]);
+  }, []);
+
+  // --- SINCRONIZAR ESTADO CON EL BACKEND ---
+  const syncBotStatus = async () => {
+    try {
+      const res = await fetch('http://31.97.253.128:3001/api/bot/status');
+      if (res.ok) {
+        const remoteState = await res.json();
+        
+        // Sincronizar estado visual con el estado del backend
+        if (remoteState.status !== botStatus) {
+            setBotStatus(remoteState.status);
+        }
+        // Sincronizar logs con los del backend
+        if (remoteState.logs && remoteState.logs.length > 0) {
+            // El servidor envía los logs con el más nuevo primero, lo que coincide con nuestro estado.
+            setLogs(remoteState.logs);
+        }
+
+        if (remoteState.trailingStop) setTrailingStop(remoteState.trailingStop);
+        // Opcional: Si el backend envía análisis, actualizar timeframeAnalyses
+        // if (remoteState.analyses) setTimeframeAnalyses(remoteState.analyses);
+      }
+    } catch (e) {
+      // Error silencioso en polling
+    }
+  };
 
   // --- CARGAR TRADES DEL SERVIDOR ---
   const refreshTrades = async () => {
@@ -146,34 +166,6 @@ const [isServerAlive, setIsServerAlive] = useState(false);
       const res = await fetch('http://31.97.253.128:3001/api/positions/active');
       const data = await res.json();
       setOpenPositions(data);
-
-      // --- LÓGICA DE RECUPERACIÓN DE ESTADO AL CARGAR LA PÁGINA ---
-      if (data.length > 0 && botStatus === 'IDLE') {
-        const activeTask = data[0]; // Asumimos que solo hay una tarea activa
-        addLog(`🔄 Tarea activa recuperada del servidor: ${activeTask.id}. Estado: ${activeTask.status}`);
-        currentTaskIdRef.current = activeTask.id;
-
-        if (activeTask.status === 'IN_POSITION' && activeTask.entryPrice) {
-          addLog(`🔄 Recuperando estado de operación abierta...`);
-          entryPriceRef.current = activeTask.entryPrice;
-          positionSizeRef.current = activeTask.positionSize;
-          baseQuantityRef.current = activeTask.baseQuantity;
-          highDuringTradeRef.current = activeTask.entryPrice; // Reset high to entry on recovery
-
-          const stopLossPrice = activeTask.entryPrice * (1 - 0.02); // 2% SL
-          setTrailingStop(stopLossPrice);
-          setBotStatus('IN_POSITION');
-        } else {
-          // Si el estado es ANALYZING o cualquier otro, simplemente reanudamos el análisis.
-          addLog(`🔄 Reanudando análisis de mercado.`);
-          setBotStatus('ANALYZING');
-        }
-      } else if (data.length === 0 && botStatus !== 'IDLE') {
-        // Si el servidor no tiene tareas pero el bot cree que está activo, lo reseteamos.
-        addLog("🔌 No hay tareas en el servidor. Sincronizando estado a IDLE.");
-        setBotStatus('IDLE');
-        currentTaskIdRef.current = null;
-      }
     } catch (e) { console.error("Error cargando posiciones"); }
   };
 
@@ -233,241 +225,53 @@ try {
     setIsVerifying(false);
   };
 
-  const aggregateCandles = (new1mCandle: Candle) => {
-    const candleTime = new Date(parseInt(new1mCandle.timestamp));
-    
-    const timeframes = { '5m': 5, '1h': 60, '4h': 240 };
-    let analysisTriggered = false;
-
-    for (const [tf, minutes] of Object.entries(timeframes)) {
-        const candleArray = tf === '5m' ? candles5m : tf === '1h' ? candles1h : candles4h;
-        const interval = minutes * 60 * 1000;
-        const candleTimestamp = Math.floor(candleTime.getTime() / interval) * interval;
-
-        if (candleArray.current.length > 0 && candleArray.current[0].timestamp === candleTimestamp.toString()) {
-            // Update existing candle
-            const currentTfCandle = candleArray.current[0];
-            currentTfCandle.high = Math.max(currentTfCandle.high, new1mCandle.high);
-            currentTfCandle.low = Math.min(currentTfCandle.low, new1mCandle.low);
-            currentTfCandle.close = new1mCandle.close;
-            currentTfCandle.volume += new1mCandle.volume;
-        } else {
-            // New candle for this timeframe
-            const newTfCandle: Candle = {
-                timestamp: candleTimestamp.toString(),
-                open: new1mCandle.open,
-                high: new1mCandle.high,
-                low: new1mCandle.low,
-                close: new1mCandle.close,
-                volume: new1mCandle.volume,
-            };
-            candleArray.current.unshift(newTfCandle);
-            if (candleArray.current.length > 200) candleArray.current.pop();
-
-            // Trigger analysis on the close of a 5m candle
-            if (tf === '5m' && botStatus === 'ANALYZING') {
-                analysisTriggered = true;
-            }
-        }
-    }
-
-    if (analysisTriggered) {
-        runStrategyAnalysis();
-    }
-  };
-
-  const runStrategyAnalysis = async () => {
-    if (botStatus !== 'ANALYZING') return;
-
-    addLog("🧠 Analizando timeframes [4h, 1h, 5m]...");
-
-    const analyses: Record<string, TimeframeAnalysis> = {
-        '4h': getSignalForTimeframe(candles4h.current),
-        '1h': getSignalForTimeframe(candles1h.current),
-        '5m': getSignalForTimeframe(candles5m.current),
-    };
-    setTimeframeAnalyses(analyses);
-
-    const signals: TimeframeSignals = {
-        '4h': analyses['4h'].finalSignal,
-        '1h': analyses['1h'].finalSignal,
-        '5m': analyses['5m'].finalSignal,
-    };
-
-    const finalSignal = getFinalSignal(signals);
-
-    const logMessage = `
-    --- ANÁLISIS MULTI-TIMEFRAME ---
-    4h: ${signals['4h']} | 1h: ${signals['1h']} | 5m: ${signals['5m']}
-    ==> SEÑAL FINAL: ${finalSignal}
-    `;
-    addLog(logMessage.replace(/\n\s+/g, '\n').trim());
-
-    if (finalSignal === 'EXECUTE_LONG') {
-        setBotStatus('BUYING');
-        addLog(`🎯 Señal LONG confirmada. Calculando riesgo y ejecutando orden...`);
-        
-        const stopLossPercent = 0.02; // 2%
-        let positionSize = calculatePositionSize(botBalance, 0.10, stopLossPercent);
-        
-        // --- AJUSTE INTELIGENTE DE POSICIÓN PARA SPOT ---
-        // Si el tamaño calculado excede el balance, se ajusta al máximo disponible.
-        if (positionSize > botBalance) {
-            addLog(`⚠️ Tamaño de posición ideal (${positionSize.toFixed(2)} USDT) excede balance. Ajustando al máximo disponible: ${botBalance.toFixed(2)} USDT.`);
-            positionSize = botBalance;
-        }
-
-        // Verificación de monto mínimo de orden (Bitget suele requerir > 5 o 10 USDT)
-        const minOrderSize = 10;
-        if (positionSize < minOrderSize) {
-            addLog(`📉 Tamaño de posición (${positionSize.toFixed(2)} USDT) es menor al mínimo requerido de ${minOrderSize} USDT. Abortando.`);
-            setBotStatus('ANALYZING');
-            return;
-        }
-
-        addLog(`💵 Tamaño de posición calculado: ${positionSize.toFixed(2)} USDT.`);
-        
-        const result = await placeOrder('buy', positionSize.toFixed(4));
-
-        if (result.code === '00000') {
-            const entryPrice = currentPrice;
-            entryPriceRef.current = entryPrice;
-            highDuringTradeRef.current = entryPrice;
-            positionSizeRef.current = positionSize;
-            baseQuantityRef.current = positionSize / entryPrice; // Guardar cantidad de BTC
-
-            const stopLossPrice = entryPrice * (1 - stopLossPercent);
-            setTrailingStop(stopLossPrice); // Initial stop loss becomes a trailing stop
-            setBotStatus('IN_POSITION');
-
-            // Actualizar la tarea en el backend con los detalles de la operación
-            if (currentTaskIdRef.current) {
-              fetch(`http://31.97.253.128:3001/api/positions/${currentTaskIdRef.current}`, {
-                method: 'PATCH',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ 
-                    status: 'IN_POSITION', 
-                    entryPrice,
-                    positionSize,
-                    baseQuantity: baseQuantityRef.current
-                })
-              });
-            }
-            
-            const targets = {
-                t1: entryPrice * 1.01,
-                t2: entryPrice * 1.02,
-                t3: entryPrice * 1.03,
-            };
-
-            addLog(`
-            ✅ ORDEN DE COMPRA EJECUTADA
-            Entrada: ${entryPrice.toFixed(2)}
-            Stop Loss Inicial: ${stopLossPrice.toFixed(2)}
-            Target 1 (50%): ${targets.t1.toFixed(2)}
-            Target 3 (Resto): ${targets.t3.toFixed(2)}
-            `);
-            // NOTE: Logic for partial take profit needs to be implemented here.
-            // The current implementation only has a trailing stop for the whole position.
-        } else {
-            addLog(`❌ Error al ejecutar orden: ${result.msg}`);
-            setBotStatus('ANALYZING');
-        }
-    }
-    // NOTE: Shorting logic for SPOT is selling the asset.
-    // If a 'EXECUTE_SHORT' signal is received, you would sell your BTC holdings.
-    // This implementation focuses on the LONG side as per the typical BTC/USDT spot strategy.
-  };
-
   // --- LÓGICA DE SALIDA CENTRALIZADA ---
   const handleExitPosition = async (reasonMsg: string, price: number) => {
     addLog(`${reasonMsg} Finalizando proceso y cerrando tarea...`);
     
-    const positionId = currentTaskIdRef.current;
+    // Intentamos detener el bot en el backend primero si estaba corriendo
+    await fetch('http://31.97.253.128:3001/api/bot/stop', { method: 'POST' });
 
-    const btcToSell = baseQuantityRef.current;
+    // Para cierre manual, necesitamos saber cuánto vender.
+    // En un sistema puro de backend, el backend sabría esto.
+    // Aquí hacemos una venta de pánico de todo lo que tengamos o usamos un endpoint de cierre de emergencia.
+    // Como fallback, usamos una cantidad pequeña o consultamos el balance de BTC.
+    const btcToSell = 0; // TODO: Fetch from balance or backend position state
     if (btcToSell <= 0) {
-        addLog("❌ Error al cerrar: Cantidad de BTC en posición es cero o inválida.");
-        // Reset state anyway to be safe
+        addLog("ℹ️ Solicitando al servidor cerrar posición abierta...");
+        // En este nuevo modelo, llamar a STOP en el backend debería cerrar la posición si el backend tiene esa lógica.
         setBotStatus('IDLE');
         setTrailingStop(null);
-        entryPriceRef.current = 0;
-        positionSizeRef.current = 0;
-        baseQuantityRef.current = 0;
         return;
     }
 
     addLog(`💸 Intentando vender ${btcToSell.toFixed(6)} BTC...`);
-    const res = await placeOrder('sell', btcToSell.toFixed(6));
+    const res = await placeOrder('sell', btcToSell.toString());
     setBotStatus('IDLE');
     setTrailingStop(null);
-    entryPriceRef.current = 0;
-    positionSizeRef.current = 0;
-    baseQuantityRef.current = 0;
-    
-    if (positionId) {
-      await fetch(`http://31.97.253.128:3001/api/positions/${positionId}`, { method: 'DELETE' });
-    }
     
     await fetch('http://31.97.253.128:3001/api/trades', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ side: 'sell', price, orderId: res.data?.orderId })
+      body: JSON.stringify({ side: 'sell', price, amount: btcToSell * price, orderId: res.data?.orderId })
     });
     
-    currentTaskIdRef.current = null;
     refreshTrades();
     refreshOpenPositions();
   };
 
-  // --- MOTOR DE ESTRATEGIA (WEBSOCKET) ---
+  // --- SOLO VISUALIZACIÓN (WEBSOCKET) ---
   useEffect(() => {
-    if (
-      !lastMessage ||
-      lastMessage.arg?.channel !== 'candle1m' ||
-      !Array.isArray(lastMessage.data) ||
-      lastMessage.data.length === 0
-    ) return;
+    if (!lastMessage) return;
 
     const newCandleData = processStream(lastMessage);
     if (!newCandleData) return;
 
     setCurrentPrice(newCandleData.close);
 
-    // Update 1m candles
-    if (candles1m.current.length === 0 || candles1m.current[0].timestamp !== newCandleData.timestamp) {
-        candles1m.current.unshift(newCandleData);
-        if (candles1m.current.length > 400) candles1m.current.pop(); // Keep enough for 4h aggregation
-        
-        // Trigger aggregation for other timeframes
-        aggregateCandles(newCandleData);
-    } else {
-        // Update current 1m candle
-        candles1m.current[0] = newCandleData;
-    }
-
-    // PNL Calculation
-    if (botStatus === 'IN_POSITION' && entryPriceRef.current > 0) {
-      const pnlPercent = ((newCandleData.close - entryPriceRef.current) / entryPriceRef.current) * 100;
-      const pnlUsdt = (pnlPercent / 100) * positionSizeRef.current;
-      setUnrealizedPnl({ percent: pnlPercent, usdt: pnlUsdt });
-    }
-
-    // Trailing Stop Logic
-    if ((botStatus === 'IN_POSITION' || botStatus === 'TRAILING_ACTIVE') && trailingStop) {
-      if (newCandleData.close > highDuringTradeRef.current) {
-        highDuringTradeRef.current = newCandleData.close;
-        const newStop = newCandleData.close * 0.98; // 2% trailing stop
-        if (newStop > trailingStop) {
-          setTrailingStop(newStop);
-          setBotStatus('TRAILING_ACTIVE');
-          addLog(`📈 Nuevo máximo en trade: ${newCandleData.close.toFixed(2)}. Trailing Stop actualizado a ${newStop.toFixed(2)}`);
-        }
-      }
-      if (newCandleData.close <= trailingStop) {
-        handleExitPosition(`📉 Trailing stop alcanzado en ${trailingStop.toFixed(2)}`, newCandleData.close);
-      }
-    }
+    // Ya no calculamos PnL ni Trailing Stop aquí.
+    // El backend se encarga de eso.
+    // Podemos mostrar el precio en tiempo real, pero la lógica está desconectada.
   }, [lastMessage, botStatus, trailingStop]);
 
   useEffect(() => {
@@ -477,44 +281,37 @@ try {
 
   const handleStartBot = async () => {
     if (botStatus === 'IDLE') {
-        addLog("🚀 Iniciando motor de estrategia. Creando tarea en backend...");
+        addLog("🚀 Enviando comando de inicio al servidor...");
         try {
-            const res = await fetch('http://31.97.253.128:3001/api/positions', {
+            const res = await fetch('http://31.97.253.128:3001/api/bot/start', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({}) // No se necesita cuerpo
+                body: JSON.stringify({ tradeMode })
             });
             if (res.ok) {
-                const newPosition = await res.json();
-                currentTaskIdRef.current = newPosition.id;
-                addLog(`✅ Tarea ${newPosition.id} registrada. Iniciando análisis.`);
+                addLog(`✅ Servidor confirmó inicio. El bot correrá 24/7.`);
+                // El polling actualizará el estado a ANALYZING
                 setBotStatus('ANALYZING');
-                refreshOpenPositions();
             } else {
-                addLog("❌ Error al registrar la tarea en el servidor.");
+                const err = await res.json();
+                addLog(`❌ Error del servidor: ${err.error || err.message}`);
             }
         } catch (e) {
             addLog("❌ Error de red. No se pudo comunicar con el backend.");
         }
     } else {
-        if (botStatus === 'IN_POSITION' || botStatus === 'TRAILING_ACTIVE') {
-            addLog("⚠️ No se puede detener mientras hay una operación activa. Cierre la posición primero.");
-            return;
-        }
-        addLog("🛑 Deteniendo motor de estrategia. Eliminando tarea del backend...");
-        if (currentTaskIdRef.current) {
-            try {
-                await fetch(`http://31.97.253.128:3001/api/positions/${currentTaskIdRef.current}`, {
-                    method: 'DELETE'
-                });
-                addLog(`✅ Tarea ${currentTaskIdRef.current} eliminada del servidor.`);
-            } catch (e) {
-                addLog("❌ Error de red al intentar eliminar la tarea.");
+        addLog("🛑 Enviando comando de parada al servidor...");
+        try {
+            const res = await fetch('http://31.97.253.128:3001/api/bot/stop', { method: 'POST' });
+            if (res.ok) {
+                addLog("✅ Bot detenido en el servidor.");
+                setBotStatus('IDLE');
+            } else {
+                addLog("⚠️ El servidor reportó un problema al detener.");
             }
+        } catch (e) {
+            addLog("❌ Error de red al intentar detener.");
         }
-        currentTaskIdRef.current = null;
-        setBotStatus('IDLE');
-        refreshOpenPositions();
     }
   };
 
@@ -524,6 +321,10 @@ try {
         <div className="title-section">
           <FiActivity className="icon-pulse" />
           <h2 className="trader-v2-title">Bitget Algorithmic Bot V2.0</h2>
+        </div>
+        <div className="status-badge remote-mode-badge">
+            <FiCpu />
+            <span>Modo: Remoto</span>
         </div>
         <div className="status-badge" data-status={botStatus}>
           <span className="status-dot"></span>
@@ -587,12 +388,29 @@ try {
 
         <div className="trader-card settings-card">
           <div className="card-header">
-            <FiDollarSign /> <h3>Parámetros de Trading</h3>
+            <FiSettings /> <h3>Parámetros de Trading</h3>
+          </div>
+          <div className="trade-mode-selector">
+            <span>Modo de Riesgo:</span>
+            <div className="radio-group">
+                {(['conservative', 'balanced', 'aggressive'] as const).map(mode => (
+                    <label key={mode}>
+                        <input
+                            type="radio"
+                            name="tradeMode"
+                            value={mode}
+                            checked={tradeMode === mode}
+                            onChange={() => setTradeMode(mode)}
+                        />
+                        {mode.charAt(0).toUpperCase() + mode.slice(1)}
+                    </label>
+                ))}
+            </div>
           </div>
           <div className="risk-params">
-            <div className="param-item"><span>Balance:</span> <span>{botBalance.toFixed(2)} USDT</span></div>
-            <div className="param-item"><span>Riesgo por Op.:</span> <span>10% ({ (botBalance * 0.1).toFixed(2) } USDT)</span></div>
-            <div className="param-item"><span>Stop Loss:</span> <span>2%</span></div>
+            <div className="param-item"><span>Riesgo por Op.:</span> <span>10%</span></div>
+            <div className="param-item"><span>Trades/Día:</span> <span>{{ conservative: 3, balanced: 6, aggressive: 10 }[tradeMode]}</span></div>
+            <div className="param-item"><span>Score Mínimo:</span> <span>{{ conservative: 4, balanced: 3, aggressive: 2 }[tradeMode]}</span></div>
           </div>
           <button 
             onClick={handleStartBot} 
@@ -681,11 +499,11 @@ try {
               <div className="timeframe-header">
                 <FiClock /> {tf}
               </div>
-              <div className={`timeframe-signal ${timeframeAnalyses[tf]?.finalSignal}`}>
-                {timeframeAnalyses[tf]?.finalSignal || 'NEUTRAL'}
+              <div className={`timeframe-signal ${timeframeAnalyses[tf]?.timeframeBias}`}>
+                {timeframeAnalyses[tf]?.timeframeBias || 'NEUTRAL'}
               </div>
               <div className="timeframe-indicators">
-                Trend: {timeframeAnalyses[tf]?.trend.slice(0,4)} · Vol: {timeframeAnalyses[tf]?.volume.slice(0,4)} · SMA: {timeframeAnalyses[tf]?.sma.slice(0,4)} · RSI: {timeframeAnalyses[tf]?.rsi.slice(0,4)} · MACD: {timeframeAnalyses[tf]?.macd.slice(0,4)}
+                Score: {timeframeAnalyses[tf]?.score ?? 'N/A'}
               </div>
             </div>
           ))}
