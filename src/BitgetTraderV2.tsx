@@ -72,7 +72,7 @@ const [isServerAlive, setIsServerAlive] = useState(false);
 
     // Si hay una tarea iniciada, enviamos el log al servidor para el TXT final
     if (currentTaskIdRef.current) {
-      fetch(`/local-server/api/positions/${currentTaskIdRef.current}/logs`, {
+      fetch(`http://31.97.253.128:3001/api/positions/${currentTaskIdRef.current}/logs`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ log: timeMsg }) // Enviamos el log con timestamp
@@ -98,7 +98,7 @@ const [isServerAlive, setIsServerAlive] = useState(false);
   // --- MONITOREO: LATIDO DEL BOT ---
   useEffect(() => {
     const checkHeartbeat = () => {
-      fetch('/local-server/api/heartbeat', {
+      fetch('http://31.97.253.128:3001/api/heartbeat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: botStatus, currentPrice, symbol: 'BTCUSDT' })
@@ -120,7 +120,7 @@ const [isServerAlive, setIsServerAlive] = useState(false);
   // --- CARGAR TRADES DEL SERVIDOR ---
   const refreshTrades = async () => {
     try {
-      const res = await fetch('/local-server/api/trades');
+      const res = await fetch('http://31.97.253.128:3001/api/trades');
       const data = await res.json();
       setRecentTrades(data.reverse().slice(0, 5)); // Últimos 5
     } catch (e) { console.error("Error cargando trades"); }
@@ -128,7 +128,7 @@ const [isServerAlive, setIsServerAlive] = useState(false);
 
   const refreshOpenPositions = async () => {
     try {
-      const res = await fetch('/local-server/api/positions/active');
+      const res = await fetch('http://31.97.253.128:3001/api/positions/active');
       const data = await res.json();
       setOpenPositions(data);
 
@@ -181,7 +181,7 @@ const [isServerAlive, setIsServerAlive] = useState(false);
 
     // 2. Verificar Claude
     try {
-      const response = await fetch('/local-server/api/verify-claude');
+      const response = await fetch('http://31.97.253.128:3001/api/verify-claude');
       const data = await response.json();
       if (response.ok) {
         addLog("✅ Claude AI: Llave válida y activa.");
@@ -401,10 +401,10 @@ if (botStatus === 'IN_POSITION' && trailingStop) {
     positionSizeRef.current = 0;
     
     if (positionId) {
-      await fetch(`/local-server/api/positions/${positionId}`, { method: 'DELETE' });
+      await fetch(`http://31.97.253.128:3001/api/positions/${positionId}`, { method: 'DELETE' });
     }
     
-    await fetch('/local-server/api/trades', {
+    await fetch('http://31.97.253.128:3001/api/trades', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ side: 'sell', price, orderId: res.data?.orderId })
@@ -448,7 +448,7 @@ const executeTrade = async (size: string) => {
     addLog(`🚀 Lanzando tarea al backend con estrategia ${selectedStrategy} y monto ${amount} USDT...`);
     
     try {
-      const res = await fetch('/local-server/api/positions', {
+      const res = await fetch('http://31.97.253.128:3001/api/positions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ strategy: selectedStrategy, amount })
