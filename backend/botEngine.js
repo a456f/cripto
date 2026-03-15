@@ -159,11 +159,12 @@ class BotEngine {
     processCandleData(dataList) {
         if (!Array.isArray(dataList) || dataList.length === 0) return;
         const raw = dataList[0];
-
-        this.log(`DEBUG candle flag: ${raw[7]}`);
-
-        // The confirm flag is the 8th element (index 7)
-        const isCandleClosed = raw[7] === '1';
+        
+        this.log(`DEBUG RAW: ${JSON.stringify(raw)}`);
+        
+        // The confirm flag is the last element. It can be a string '1' or number 1.
+        const confirm = raw[raw.length - 1];
+        const isCandleClosed = confirm === '1' || confirm === 1;
 
         const candle = {
             timestamp: raw[0],
@@ -177,6 +178,9 @@ class BotEngine {
         this.log(`📡 Vela recibida 1m | precio: ${candle.close}`);
 
         this.state.currentPrice = candle.close;
+
+        // detectar breakout en tiempo real en cada tick
+        this.detectRealtimeBreakout(candle);
 
         // --- Logic for closed 1-minute candles ---
         if (isCandleClosed) {
@@ -258,12 +262,15 @@ class BotEngine {
             const avgVolume =
                 candles5m.slice(1,6).reduce((a,c)=>a+c.volume,0) / 5;
 
+            // Lógica de breakout mejorada para cierre de vela
             const breakout =
                 last.close > prev.high &&
-                last.volume > avgVolume * 1.5;
+                last.close > last.open && // Vela alcista
+                last.volume > avgVolume * 1.2 && // Volumen más flexible
+                signals['1h'].timeframeBias === 'BULLISH'; // Confirmación de tendencia mayor
 
             if (breakout) {
-                this.log("🚀 BREAKOUT detectado con volumen");
+                this.log("🚀 BREAKOUT (en cierre de vela) detectado con volumen y confirmación");
                 this.executeBuy();
                 return;
             }
@@ -278,15 +285,37 @@ class BotEngine {
         }
     }
 
+    detectRealtimeBreakout(candle) {
+        // Evita compras repetidas si ya está en una posición o en proceso de compra
+        if (this.state.status !== 'ANALYZING') return;
+
+        const candles5m = this.state.candles['5m'];
+        // Necesitamos al menos una vela de 5m completamente cerrada para obtener su máximo
+        if (candles5m.length < 2) return;
+
+        const prev5m = candles5m[1]; // La vela de 5m anterior, ya cerrada.
+
+        // Condición de breakout en tiempo real:
+        // 1. El precio actual del tick supera el máximo de la vela de 5m anterior.
+        // 2. La vela de 1m actual es alcista (cierre > apertura) para confirmar momentum.
+        if (
+            candle.close > prev5m.high &&
+            candle.close > candle.open
+        ) {
+            this.log(`⚡ BREAKOUT EN TIEMPO REAL detectado en ${candle.close} (superando máximo anterior de ${prev5m.high})`);
+            this.executeBuy();
+        }
+    }
+
     async executeBuy() {
+        // Prevenir compras múltiples si ya hay una en curso o una posición abierta
+        if (this.state.status !== 'ANALYZING') return;
 
-        if (this.state.status === 'IN_POSITION') return;
-
+        this.state.status = 'BUYING'; // Bloquear estado para evitar compras concurrentes
         this.log("🎯 [BOT ENGINE] Señal de COMPRA detectada. Ejecutando orden real...");
 
         try {
-
-            const sizeUSDT = 10; // puedes cambiarlo luego por cálculo dinámico
+            const sizeUSDT = 12; // Aumentado para evitar errores de precisión con mínimos de exchange
 
             const res = await fetch("http://localhost:3001/api/place-order", {
                 method: "POST",
@@ -301,6 +330,7 @@ class BotEngine {
 
             if (data.code !== "00000") {
                 this.log(`❌ Error ejecutando compra: ${data.msg}`);
+                this.state.status = 'ANALYZING'; // Revertir estado si la orden falla
                 return;
             }
 
@@ -321,8 +351,8 @@ class BotEngine {
 
         } catch (err) {
 
-            this.log(`❌ Error enviando orden BUY: ${err.message}`);
-
+            this.log(`❌ Error crítico enviando orden BUY: ${err.message}`);
+            this.state.status = 'ANALYZING'; // Revertir estado si hay error de red
         }
     }
 

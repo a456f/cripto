@@ -5,7 +5,7 @@ require('dotenv').config({ path: __dirname + '/../.env' });
 const { Anthropic } = require('@anthropic-ai/sdk');
 const BotEngine = require('./botEngine');
 
-const BOT_VERSION = "2.3";
+const BOT_VERSION = "3.3";
 
 const app = express();
 app.use(express.json());
