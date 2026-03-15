@@ -47,16 +47,19 @@ class BotEngine {
 
         for (const [tf, granularity] of Object.entries(timeframes)) {
             try {
-                const url = `https://api.bitget.com/api/v2/spot/market/candles?symbol=${this.config.symbol}&granularity=${granularity}&limit=200`;
+                // Re-route the request through the server's own API endpoint, which is known to work.
+                // This centralizes external API calls and bypasses potential environment/network issues with direct fetch.
+                const url = `http://localhost:3001/api/historical-candles?symbol=${this.config.symbol}&granularity=${granularity}&limit=200`;
                 const res = await fetch(url);
-                if (!res.ok) throw new Error(`Fallo al cargar velas de ${tf} (HTTP ${res.status})`);
                 
-                const apiResponse = await res.json();
-                if (apiResponse.code !== '00000') {
-                    throw new Error(`Error de API Bitget para ${tf}: ${apiResponse.msg}`);
+                if (!res.ok) {
+                    // Get the specific error message from our server's response
+                    const errorData = await res.json().catch(() => ({ error: `Respuesta no válida del servidor (HTTP ${res.status})` }));
+                    throw new Error(errorData.error || 'Error desconocido del servidor');
                 }
+                
+                const data = await res.json();
 
-                const data = apiResponse.data;
                 this.state.candles[tf] = data.map((c) => ({ 
                     timestamp: c[0], 
                     open: parseFloat(c[1]), 
@@ -67,7 +70,8 @@ class BotEngine {
                 }));
                 this.log(`✅ ${this.state.candles[tf].length} velas de ${tf} cargadas.`);
             } catch (e) {
-                this.log(`❌ ${e.message}`); 
+                // Add the timeframe to the error for better context
+                this.log(`❌ Fallo al cargar velas de ${tf}: ${e.message}`); 
                 allLoaded = false;
             }
         }
