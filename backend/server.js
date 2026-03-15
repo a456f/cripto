@@ -8,12 +8,12 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-if (!process.env.VITE_CLAUDE_API_KEY) {
-    console.error("⚠️ CRÍTICO: VITE_CLAUDE_API_KEY no encontrada en el archivo .env");
+if (!process.env.CLAUDE_API_KEY) {
+    console.error("⚠️ CRÍTICO: CLAUDE_API_KEY no encontrada en el archivo .env");
 }
 
 const anthropic = new Anthropic({
-    apiKey: process.env.VITE_CLAUDE_API_KEY,
+    apiKey: process.env.CLAUDE_API_KEY,
 });
 
 const TRADES_FILE = './trades.json';
