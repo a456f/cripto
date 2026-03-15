@@ -22,20 +22,24 @@ export const executeOrder = async (side: 'buy' | 'sell', symbol: string, size: s
     // Firma requerida por la API V2 de Bitget
     const signature = CryptoJS.HmacSHA256(timestamp + 'POST' + path + body, secretKey).toString(CryptoJS.enc.Base64);
 
-    try {
-        const response = await fetch(`https://api.bitget.com${path}`, {
-            method: 'POST',
-            headers: {
-                'ACCESS-KEY': apiKey,
-                'ACCESS-SIGN': signature,
-                'ACCESS-PASSPHRASE': passphrase,
-                'ACCESS-TIMESTAMP': timestamp,
-                'Content-Type': 'application/json',
-            },
-            body
-        });
-        return await response.json();
-    } catch (error: any) {
-        return { code: 'ERROR', msg: error.message };
-    }
+try {
+
+  const response = await fetch('/local-server/api/place-order', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      side,
+      size
+    })
+  });
+
+  return await response.json();
+
+} catch (error: any) {
+
+  return { code: 'ERROR', msg: error.message };
+
+}
 };

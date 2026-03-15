@@ -45,7 +45,38 @@ app.get('/api/trades', (req, res) => {
         res.send(trades);
     } else { res.send([]); }
 });
+app.get('/api/bitget-assets', async (req, res) => {
+  try {
 
+    const timestamp = Date.now().toString()
+    const path = '/api/v2/spot/account/assets'
+    const method = 'GET'
+
+    const crypto = require('crypto')
+
+    const sign = crypto
+      .createHmac('sha256', process.env.BITGET_SECRET_KEY)
+      .update(timestamp + method + path)
+      .digest('base64')
+
+    const response = await fetch(`https://api.bitget.com${path}`, {
+      method: 'GET',
+      headers: {
+        'ACCESS-KEY': process.env.BITGET_API_KEY,
+        'ACCESS-SIGN': sign,
+        'ACCESS-PASSPHRASE': process.env.BITGET_PASSPHRASE,
+        'ACCESS-TIMESTAMP': timestamp,
+        'Content-Type': 'application/json'
+      }
+    })
+
+    const data = await response.json()
+    res.json(data)
+
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
 // --- GESTIÓN DE POSICIONES ABIERTAS (TAREAS) ---
 app.post('/api/positions', (req, res) => {
     const { strategy, amount } = req.body;

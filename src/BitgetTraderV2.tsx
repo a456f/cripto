@@ -159,25 +159,24 @@ const [isServerAlive, setIsServerAlive] = useState(false);
     addLog("🔍 Iniciando verificación de seguridad...");
 
     // 1. Verificar Bitget (Obteniendo activos de la cuenta)
-    try {
-      const timestamp = Date.now().toString();
-      const path = '/api/v2/spot/account/assets';
-      const res = await fetch(`https://api.bitget.com${path}`, {
-        method: 'GET',
-        headers: {
-          'ACCESS-KEY': apiKey,
-          'ACCESS-SIGN': sign(timestamp, 'GET', path, ''),
-          'ACCESS-PASSPHRASE': passphrase,
-          'ACCESS-TIMESTAMP': timestamp,
-          'Content-Type': 'application/json',
-        }
-      });
-      const data = await res.json();
-      if (data.code === '00000') addLog("✅ Bitget API: Conexión exitosa y autenticada.");
-      else addLog(`❌ Bitget API: Error (${data.msg})`);
-    } catch (e: any) {
-      addLog(`❌ Bitget API: Error de conexión`);
-    }
+  // 1. Verificar Bitget
+try {
+
+  const res = await fetch('/local-server/api/bitget-assets');
+
+  const data = await res.json();
+
+  if (data.code === '00000') {
+    addLog("✅ Bitget API: Conexión exitosa y autenticada.");
+  } else {
+    addLog(`❌ Bitget API: Error (${data.msg})`);
+  }
+
+} catch (e: any) {
+
+  addLog(`❌ Bitget API: Error de conexión`);
+
+}
 
     // 2. Verificar Claude
     try {
@@ -206,22 +205,26 @@ const [isServerAlive, setIsServerAlive] = useState(false);
       force: 'gtc' // Good-Til-Canceled
     });
 
-    try {
-      const res = await fetch(`https://api.bitget.com${path}`, {
-        method: 'POST',
-        headers: {
-          'ACCESS-KEY': apiKey,
-          'ACCESS-SIGN': sign(timestamp, 'POST', path, body),
-          'ACCESS-PASSPHRASE': passphrase,
-          'ACCESS-TIMESTAMP': timestamp,
-          'Content-Type': 'application/json',
-        },
-        body
-      });
-      return await res.json();
-    } catch (e: any) {
-      return { code: 'ERROR', msg: `Network Error: ${e.message}` };
-    }
+try {
+
+  const res = await fetch('/local-server/api/place-order', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      side,
+      size
+    })
+  });
+
+  return await res.json();
+
+} catch (e: any) {
+
+  return { code: 'ERROR', msg: `Network Error: ${e.message}` };
+
+}
   };
 
   // --- MOTOR DE ESTRATEGIA (ACTUALIZADO POR WEBSOCKET) ---
