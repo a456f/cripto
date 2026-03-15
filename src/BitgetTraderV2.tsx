@@ -162,7 +162,7 @@ const [isServerAlive, setIsServerAlive] = useState(false);
     try {
       const timestamp = Date.now().toString();
       const path = '/api/v2/spot/account/assets';
-      const res = await fetch(`/bitget-api${path}`, {
+      const res = await fetch(`https://api.bitget.com${path}`, {
         method: 'GET',
         headers: {
           'ACCESS-KEY': apiKey,
@@ -207,7 +207,7 @@ const [isServerAlive, setIsServerAlive] = useState(false);
     });
 
     try {
-      const res = await fetch(`/bitget-api${path}`, {
+      const res = await fetch(`https://api.bitget.com${path}`, {
         method: 'POST',
         headers: {
           'ACCESS-KEY': apiKey,

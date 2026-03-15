@@ -23,7 +23,7 @@ export const executeOrder = async (side: 'buy' | 'sell', symbol: string, size: s
     const signature = CryptoJS.HmacSHA256(timestamp + 'POST' + path + body, secretKey).toString(CryptoJS.enc.Base64);
 
     try {
-        const response = await fetch(`/bitget-api${path}`, {
+        const response = await fetch(`https://api.bitget.com${path}`, {
             method: 'POST',
             headers: {
                 'ACCESS-KEY': apiKey,
