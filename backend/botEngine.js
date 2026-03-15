@@ -154,6 +154,9 @@ class BotEngine {
     processCandleData(dataList) {
         if (!Array.isArray(dataList) || dataList.length === 0) return;
         const raw = dataList[0];
+        // The confirm flag is the 8th element (index 7)
+        const isCandleClosed = raw[7] === '1';
+
         const candle = {
             timestamp: raw[0],
             open: parseFloat(raw[1]),
@@ -164,13 +167,30 @@ class BotEngine {
         };
 
         this.state.currentPrice = candle.close;
-        this.aggregateCandles(candle);
-        
-        // Ejecutar lógica principal
-        if (this.state.status === 'ANALYZING') {
-            this.evaluateStrategy();
-        } else if (this.state.status === 'IN_POSITION') {
-            this.managePosition(candle);
+
+        // --- Logic for closed 1-minute candles ---
+        if (isCandleClosed) {
+            this.aggregateCandles(candle);
+            
+            const is5mBoundary = (parseInt(candle.timestamp) / (1000 * 60)) % 5 === 0;
+
+            if (is5mBoundary) {
+                this.log(`--- Cierre de vela 5m, evaluando estrategia ---`);
+                if (this.state.status === 'ANALYZING') {
+                    this.evaluateStrategy();
+                }
+            }
+
+            // Manage trailing stop update on closed 1m candles
+            if (this.state.status === 'IN_POSITION') {
+                this.updateTrailingStop(candle);
+            }
+        }
+
+        // --- Logic for every tick (including closed candles) ---
+        // Always check the stop loss for safety, regardless of candle state
+        if (this.state.status === 'IN_POSITION') {
+            this.checkStopLoss(candle);
         }
     }
 
@@ -221,46 +241,114 @@ class BotEngine {
     }
 
     async executeBuy() {
-        this.log("🎯 [BOT ENGINE] Señal de COMPRA detectada. Ejecutando...");
-        // 1. Calcular tamaño (simulado aquí, deberías llamar a tu API de balance)
-        // 2. Ejecutar orden
-        // 3. Actualizar estado a IN_POSITION
-        // Nota: Aquí llamarías a this.placeOrder(...) 
-        this.state.status = 'IN_POSITION';
-        this.state.position = { 
-            entryPrice: this.state.currentPrice, 
-            quantity: 0.001, // Ejemplo
-            size: 20, // Ejemplo
-            highPrice: this.state.currentPrice
-        };
-        this.state.trailingStop = this.state.currentPrice * (1 - this.config.stopLossPercent);
-        this.log(`✅ COMPRA EJECUTADA. Posición abierta en ${this.state.position.entryPrice}. Stop Loss inicial en ${this.state.trailingStop.toFixed(2)}`);
+
+        if (this.state.status === 'IN_POSITION') return;
+
+        this.log("🎯 [BOT ENGINE] Señal de COMPRA detectada. Ejecutando orden real...");
+
+        try {
+
+            const sizeUSDT = 2; // puedes cambiarlo luego por cálculo dinámico
+
+            const res = await fetch("http://localhost:3001/api/place-order", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    side: "buy",
+                    size: sizeUSDT
+                })
+            });
+
+            const data = await res.json();
+
+            if (data.code !== "00000") {
+                this.log(`❌ Error ejecutando compra: ${data.msg}`);
+                return;
+            }
+
+            const entry = this.state.currentPrice;
+
+            this.state.status = 'IN_POSITION';
+
+            this.state.position = {
+                entryPrice: entry,
+                size: sizeUSDT,
+                quantity: sizeUSDT / entry,
+                highPrice: entry
+            };
+
+            this.state.trailingStop = entry * (1 - this.config.stopLossPercent);
+
+            this.log(`✅ COMPRA REAL EJECUTADA en ${entry}`);
+
+        } catch (err) {
+
+            this.log(`❌ Error enviando orden BUY: ${err.message}`);
+
+        }
     }
 
-    managePosition(candle) {
+    // Checks on every price tick if the stop loss has been hit.
+    checkStopLoss(candle) {
         if (!this.state.position || !this.state.trailingStop) return;
 
-        // Lógica de Trailing Stop
-        this.state.position.highPrice = Math.max(this.state.position.highPrice || this.state.position.entryPrice, candle.high);
-        const newStop = this.state.position.highPrice * (1 - this.config.stopLossPercent);
-        
-        if (newStop > this.state.trailingStop) {
-            this.state.trailingStop = newStop;
-            this.log(`📈 [BOT ENGINE] Trailing Stop actualizado: ${newStop.toFixed(2)}`);
-        }
-
         if (candle.close <= this.state.trailingStop) {
-            this.log(`📉 [BOT ENGINE] Stop Loss alcanzado en ${this.state.trailingStop.toFixed(2)}. Vendiendo...`);
+            this.log(`📉 [TICK] Stop Loss alcanzado en ${this.state.trailingStop.toFixed(2)}. Vendiendo...`);
             this.executeSell();
         }
     }
 
+    // Updates the trailing stop based on new highs. Only runs on closed candles.
+    updateTrailingStop(closedCandle) {
+        if (!this.state.position || !this.state.trailingStop) return;
+
+        // Update the highest price seen during the trade
+        const highPriceSinceEntry = Math.max(this.state.position.highPrice || this.state.position.entryPrice, closedCandle.high);
+
+        if (highPriceSinceEntry > this.state.position.highPrice) {
+            this.state.position.highPrice = highPriceSinceEntry;
+            const newStop = this.state.position.highPrice * (1 - this.config.stopLossPercent);
+            
+            if (newStop > this.state.trailingStop) {
+                this.state.trailingStop = newStop;
+                this.log(`📈 [CANDLE CLOSE] Trailing Stop actualizado: ${newStop.toFixed(2)}`);
+            }
+        }
+    }
+
     async executeSell() {
-        // Lógica de venta
-        this.log(`💸 VENTA EJECUTADA. Cerrando posición.`);
-        this.state.status = 'ANALYZING'; // Volver a buscar
-        this.state.position = null;
-        this.state.trailingStop = null;
+
+        try {
+
+            const quantity = this.state.position.quantity;
+
+            const res = await fetch("http://localhost:3001/api/place-order", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    side: "sell",
+                    size: quantity
+                })
+            });
+
+            const data = await res.json();
+
+            if (data.code !== "00000") {
+                this.log(`❌ Error ejecutando venta: ${data.msg}`);
+                return;
+            }
+
+            this.log("💸 VENTA REAL EJECUTADA");
+
+            this.state.status = "ANALYZING";
+            this.state.position = null;
+            this.state.trailingStop = null;
+
+        } catch (err) {
+
+            this.log(`❌ Error enviando orden SELL: ${err.message}`);
+
+        }
     }
     
     // Método para inyectar datos históricos al iniciar
