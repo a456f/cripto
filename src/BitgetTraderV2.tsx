@@ -162,7 +162,7 @@ const [isServerAlive, setIsServerAlive] = useState(false);
   // 1. Verificar Bitget
 try {
 
-  const res = await fetch('/local-server/api/bitget-assets');
+  const res = await fetch('http://31.97.253.128:3001/api/bitget-assets');
 
   const data = await res.json();
 
