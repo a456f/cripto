@@ -94,10 +94,9 @@ app.get('/api/bitget-assets', async (req, res) => {
 app.get('/api/historical-candles', async (req, res) => {
   try {
     const { symbol = 'BTCUSDT', granularity = '1m', limit = '200' } = req.query;
-    
-    // Bitget API requires the symbol to be in uppercase and granularity to match their format.
+
+    // La granularidad ahora se espera en el formato correcto desde el llamador (botEngine).
     const apiUrl = `https://api.bitget.com/api/v2/spot/market/candles?symbol=${symbol.toUpperCase()}&granularity=${granularity}&limit=${limit}`;
-    
     const response = await fetch(apiUrl);
     if (!response.ok) {
       throw new Error(`Bitget API error: ${response.statusText}`);

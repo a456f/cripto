@@ -42,7 +42,11 @@ class BotEngine {
 
     async loadHistoricalData() {
         this.log("⏳ Cargando datos históricos de velas...");
-        const timeframes = { '5m': '5m', '1h': '1H', '4h': '4H' };
+        const timeframes = {
+            '5m': '5min',
+            '1h': '1h',
+            '4h': '4h'
+        };
         let allLoaded = true;
 
         for (const [tf, granularity] of Object.entries(timeframes)) {
