@@ -171,14 +171,10 @@ class BotEngine {
         // --- Logic for closed 1-minute candles ---
         if (isCandleClosed) {
             this.aggregateCandles(candle);
-            
-            const is5mBoundary = (parseInt(candle.timestamp) / (1000 * 60)) % 5 === 0;
 
-            if (is5mBoundary) {
-                this.log(`--- Cierre de vela 5m, evaluando estrategia ---`);
-                if (this.state.status === 'ANALYZING') {
-                    this.evaluateStrategy();
-                }
+            // analizar cada minuto
+            if (this.state.status === 'ANALYZING') {
+                this.evaluateStrategy();
             }
 
             // Manage trailing stop update on closed 1m candles
@@ -231,9 +227,30 @@ class BotEngine {
         };
 
         const finalSignal = getFinalSignal(signals, this.state.tradeMode);
-        
-        // Log ligero para monitoreo (solo cada cambio de vela 5m o señal fuerte)
-        // ...
+
+        this.log(`📊 ANALISIS → 4h:${signals['4h'].timeframeBias} | 1h:${signals['1h'].timeframeBias} | 5m:${signals['5m'].timeframeBias} | FINAL:${finalSignal}`);
+
+        // detector de ruptura con volumen
+        const candles5m = this.state.candles['5m'];
+
+        if (candles5m.length > 10) {
+
+            const last = candles5m[0];
+            const prev = candles5m[1];
+
+            const avgVolume =
+                candles5m.slice(1,6).reduce((a,c)=>a+c.volume,0) / 5;
+
+            const breakout =
+                last.close > prev.high &&
+                last.volume > avgVolume * 1.5;
+
+            if (breakout) {
+                this.log("🚀 BREAKOUT detectado con volumen");
+                this.executeBuy();
+                return;
+            }
+        }
 
         if (finalSignal === 'EXECUTE_LONG') {
             this.executeBuy();
