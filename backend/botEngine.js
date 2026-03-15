@@ -170,6 +170,7 @@ class BotEngine {
 
         // --- Logic for closed 1-minute candles ---
         if (isCandleClosed) {
+            this.log(`⏱ Vela 1m cerrada`);
             this.aggregateCandles(candle);
 
             // analizar cada minuto
@@ -217,8 +218,13 @@ class BotEngine {
     }
 
     evaluateStrategy() {
+        this.log(`📊 Ejecutando análisis de mercado...`);
+
         // Validar que tenemos suficientes datos
-        if (this.state.candles['4h'].length < 50) return;
+        if (this.state.candles['4h'].length < 50) {
+            this.log("⚠️ No hay suficientes velas para analizar");
+            return;
+        }
 
         const signals = {
             '4h': getSignalForTimeframe(this.state.candles['4h']),
