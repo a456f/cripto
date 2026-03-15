@@ -12,6 +12,7 @@ class BotEngine {
         this.ws = null;
         this.pingInterval = null;
         this.reconnectTimeout = null;
+        this.heartbeatInterval = null;
         
         this.state = {
             status: 'IDLE', // IDLE, ANALYZING, IN_POSITION
@@ -95,6 +96,9 @@ class BotEngine {
             this.state.status = 'ANALYZING';
             this.connectWebSocket();
             this.log(`🚀 [BOT ENGINE] Iniciado en modo ${this.state.tradeMode}. Analizando mercado...`);
+            this.heartbeatInterval = setInterval(() => {
+               this.log(`💓 BOT ALIVE | price: ${this.state.currentPrice}`)
+            }, 60000);
         }
     }
 
@@ -105,6 +109,7 @@ class BotEngine {
         }
         this.state.status = 'IDLE';
         this.closeWebSocket();
+        clearInterval(this.heartbeatInterval);
         this.log("🛑 [BOT ENGINE] Detenido.");
         return true;
     }
@@ -154,6 +159,9 @@ class BotEngine {
     processCandleData(dataList) {
         if (!Array.isArray(dataList) || dataList.length === 0) return;
         const raw = dataList[0];
+
+        this.log(`DEBUG candle flag: ${raw[7]}`);
+
         // The confirm flag is the 8th element (index 7)
         const isCandleClosed = raw[7] === '1';
 
