@@ -5,6 +5,8 @@ require('dotenv').config({ path: __dirname + '/../.env' });
 const { Anthropic } = require('@anthropic-ai/sdk');
 const BotEngine = require('./botEngine');
 
+const BOT_VERSION = "2.3";
+
 const app = express();
 app.use(express.json());
 app.use(cors());
@@ -305,12 +307,13 @@ app.get('/api/status', (req, res) => {
 app.post('/api/bot/start', async (req, res) => {
     const { tradeMode } = req.body;
     try {
+        console.log(`🤖 Iniciando BOT ENGINE v${BOT_VERSION}`);
         console.log("Cargando datos históricos para el bot...");
         // El motor del bot se inicia y se le pasa el modo de trading.
         // El motor es responsable de cargar los datos históricos si es necesario.
         await bot.start({ tradeMode });
 
-        res.send({ message: 'Bot iniciado en el servidor' });
+        res.send({ message: 'Bot iniciado en el servidor', version: BOT_VERSION });
     } catch (e) {
         console.error("Error iniciando bot:", e);
         res.status(500).send({ error: e.message });
@@ -333,4 +336,7 @@ process.on('SIGINT', () => {
     process.exit();
 });
 
-app.listen(3001, () => console.log('🚀 Servidor y Bot Engine corriendo en http://localhost:3001'));
+app.listen(3001, () => {
+    console.log(`🚀 Servidor y Bot Engine corriendo en http://localhost:3001`);
+    console.log(`🤖 BOT VERSION: v${BOT_VERSION}`);
+});

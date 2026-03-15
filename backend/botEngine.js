@@ -166,6 +166,8 @@ class BotEngine {
             volume: parseFloat(raw[5])
         };
 
+        this.log(`📡 Vela recibida 1m | precio: ${candle.close}`);
+
         this.state.currentPrice = candle.close;
 
         // --- Logic for closed 1-minute candles ---
@@ -218,7 +220,7 @@ class BotEngine {
     }
 
     evaluateStrategy() {
-        this.log(`📊 Ejecutando análisis de mercado...`);
+        this.log("📊 Analizando mercado...");
 
         // Validar que tenemos suficientes datos
         if (this.state.candles['4h'].length < 50) {
@@ -235,6 +237,7 @@ class BotEngine {
         const finalSignal = getFinalSignal(signals, this.state.tradeMode);
 
         this.log(`📊 ANALISIS → 4h:${signals['4h'].timeframeBias} | 1h:${signals['1h'].timeframeBias} | 5m:${signals['5m'].timeframeBias} | FINAL:${finalSignal}`);
+        this.log(`📊 Resultado: ${finalSignal}`);
 
         // detector de ruptura con volumen
         const candles5m = this.state.candles['5m'];
@@ -260,6 +263,10 @@ class BotEngine {
 
         if (finalSignal === 'EXECUTE_LONG') {
             this.executeBuy();
+        }
+
+        if (finalSignal !== 'EXECUTE_LONG') {
+            this.log("❌ No hay señal de compra");
         }
     }
 
