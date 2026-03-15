@@ -233,7 +233,7 @@ class BotEngine {
             size: 20, // Ejemplo
             highPrice: this.state.currentPrice
         };
-        this.state.trailingStop = this.state.currentPrice * (1 - this.state.config.stopLossPercent);
+        this.state.trailingStop = this.state.currentPrice * (1 - this.config.stopLossPercent);
         this.log(`✅ COMPRA EJECUTADA. Posición abierta en ${this.state.position.entryPrice}. Stop Loss inicial en ${this.state.trailingStop.toFixed(2)}`);
     }
 
@@ -242,7 +242,7 @@ class BotEngine {
 
         // Lógica de Trailing Stop
         this.state.position.highPrice = Math.max(this.state.position.highPrice || this.state.position.entryPrice, candle.high);
-        const newStop = this.state.position.highPrice * (1 - this.state.config.stopLossPercent);
+        const newStop = this.state.position.highPrice * (1 - this.config.stopLossPercent);
         
         if (newStop > this.state.trailingStop) {
             this.state.trailingStop = newStop;
