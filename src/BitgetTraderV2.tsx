@@ -54,6 +54,7 @@ const BitgetTraderV2: React.FC = () => {
   const candles4h = useRef<Candle[]>([]);
   const entryPriceRef = useRef<number>(0);
   const positionSizeRef = useRef<number>(0);
+  const baseQuantityRef = useRef<number>(0); // Cantidad en BTC
   const highDuringTradeRef = useRef<number>(0);
 const { lastMessage, connectionStatus } = useBitgetSocket([
   { instType: 'SPOT', channel: 'candle1m', instId: 'BTCUSDT' }
@@ -83,6 +84,24 @@ const [isServerAlive, setIsServerAlive] = useState(false);
     }
   };
 
+  const refreshBalance = async () => {
+    // No refrescar si no hay llaves, para evitar errores 401 en la consola del backend.
+    if (!apiKey || !secretKey || !passphrase) return;
+
+    try {
+      const res = await fetch('http://31.97.253.128:3001/api/bitget-assets');
+      if (!res.ok) return; // Fallar silenciosamente en errores HTTP
+      const data = await res.json();
+      if (data.code === '00000') {
+        const usdtAsset = data.data?.find((asset: any) => asset.coin === 'USDT');
+        if (usdtAsset && usdtAsset.available) {
+          const availableUsdt = parseFloat(usdtAsset.available);
+          setBotBalance(availableUsdt);
+        }
+      }
+    } catch (e) { /* Fallar silenciosamente en errores de red */ }
+  };
+
   const playNotifySound = () => {
     const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2568/2568-preview.mp3');
     audio.play().catch(e => console.log("Interacción de usuario requerida para sonido"));
@@ -101,12 +120,15 @@ const [isServerAlive, setIsServerAlive] = useState(false);
     };
 
     checkHeartbeat(); // Verificar al montar
+    refreshBalance(); // Cargar balance al inicio
     const hbInterval = setInterval(checkHeartbeat, 10000);
     const posInterval = setInterval(refreshOpenPositions, 5000); // Refrescar tareas cada 5s
+    const balanceInterval = setInterval(refreshBalance, 15000); // Refrescar balance cada 15s
 
     return () => {
       clearInterval(hbInterval);
       clearInterval(posInterval);
+      clearInterval(balanceInterval);
     };
   }, [botStatus, currentPrice]);
 
@@ -125,14 +147,32 @@ const [isServerAlive, setIsServerAlive] = useState(false);
       const data = await res.json();
       setOpenPositions(data);
 
-      // --- LÓGICA DE RECUPERACIÓN DE ESTADO ---
+      // --- LÓGICA DE RECUPERACIÓN DE ESTADO AL CARGAR LA PÁGINA ---
       if (data.length > 0 && botStatus === 'IDLE') {
-        const lastPosition = data[data.length - 1];
-        addLog(`🔄 Tarea activa recuperada del servidor. ID: ${lastPosition.id}`);
-        currentTaskIdRef.current = lastPosition.id;
-        entryPriceRef.current = lastPosition.price;
-        positionSizeRef.current = parseFloat(lastPosition.amount);
-        setBotStatus('IN_POSITION'); // Reanudar el estado de seguimiento
+        const activeTask = data[0]; // Asumimos que solo hay una tarea activa
+        addLog(`🔄 Tarea activa recuperada del servidor: ${activeTask.id}. Estado: ${activeTask.status}`);
+        currentTaskIdRef.current = activeTask.id;
+
+        if (activeTask.status === 'IN_POSITION' && activeTask.entryPrice) {
+          addLog(`🔄 Recuperando estado de operación abierta...`);
+          entryPriceRef.current = activeTask.entryPrice;
+          positionSizeRef.current = activeTask.positionSize;
+          baseQuantityRef.current = activeTask.baseQuantity;
+          highDuringTradeRef.current = activeTask.entryPrice; // Reset high to entry on recovery
+
+          const stopLossPrice = activeTask.entryPrice * (1 - 0.02); // 2% SL
+          setTrailingStop(stopLossPrice);
+          setBotStatus('IN_POSITION');
+        } else {
+          // Si el estado es ANALYZING o cualquier otro, simplemente reanudamos el análisis.
+          addLog(`🔄 Reanudando análisis de mercado.`);
+          setBotStatus('ANALYZING');
+        }
+      } else if (data.length === 0 && botStatus !== 'IDLE') {
+        // Si el servidor no tiene tareas pero el bot cree que está activo, lo reseteamos.
+        addLog("🔌 No hay tareas en el servidor. Sincronizando estado a IDLE.");
+        setBotStatus('IDLE');
+        currentTaskIdRef.current = null;
       }
     } catch (e) { console.error("Error cargando posiciones"); }
   };
@@ -158,13 +198,20 @@ try {
   const res = await fetch('http://31.97.253.128:3001/api/bitget-assets');
 
   const data = await res.json();
-
   if (data.code === '00000') {
     addLog("✅ Bitget API: Conexión exitosa y autenticada.");
+    const usdtAsset = data.data?.find((asset: any) => asset.coin === 'USDT');
+    if (usdtAsset && usdtAsset.available) {
+      const availableUsdt = parseFloat(usdtAsset.available);
+      setBotBalance(availableUsdt);
+      addLog(`💰 Balance real detectado: ${availableUsdt.toFixed(2)} USDT.`);
+    } else {
+      addLog("⚠️ No se pudo encontrar balance de USDT. Usando balance simulado de 1000 USDT.");
+      setBotBalance(1000); // Fallback to simulated balance
+    }
   } else {
     addLog(`❌ Bitget API: Error (${data.msg})`);
   }
-
 } catch (e: any) {
 
   addLog(`❌ Bitget API: Error de conexión`);
@@ -261,10 +308,19 @@ try {
         addLog(`🎯 Señal LONG confirmada. Calculando riesgo y ejecutando orden...`);
         
         const stopLossPercent = 0.02; // 2%
-        const positionSize = calculatePositionSize(botBalance, 0.10, stopLossPercent);
+        let positionSize = calculatePositionSize(botBalance, 0.10, stopLossPercent);
         
+        // --- AJUSTE INTELIGENTE DE POSICIÓN PARA SPOT ---
+        // Si el tamaño calculado excede el balance, se ajusta al máximo disponible.
         if (positionSize > botBalance) {
-            addLog(`⚠️ Riesgo muy alto. Tamaño de posición (${positionSize.toFixed(2)}) excede balance (${botBalance}). Abortando.`);
+            addLog(`⚠️ Tamaño de posición ideal (${positionSize.toFixed(2)} USDT) excede balance. Ajustando al máximo disponible: ${botBalance.toFixed(2)} USDT.`);
+            positionSize = botBalance;
+        }
+
+        // Verificación de monto mínimo de orden (Bitget suele requerir > 5 o 10 USDT)
+        const minOrderSize = 10;
+        if (positionSize < minOrderSize) {
+            addLog(`📉 Tamaño de posición (${positionSize.toFixed(2)} USDT) es menor al mínimo requerido de ${minOrderSize} USDT. Abortando.`);
             setBotStatus('ANALYZING');
             return;
         }
@@ -278,10 +334,25 @@ try {
             entryPriceRef.current = entryPrice;
             highDuringTradeRef.current = entryPrice;
             positionSizeRef.current = positionSize;
+            baseQuantityRef.current = positionSize / entryPrice; // Guardar cantidad de BTC
 
             const stopLossPrice = entryPrice * (1 - stopLossPercent);
             setTrailingStop(stopLossPrice); // Initial stop loss becomes a trailing stop
             setBotStatus('IN_POSITION');
+
+            // Actualizar la tarea en el backend con los detalles de la operación
+            if (currentTaskIdRef.current) {
+              fetch(`http://31.97.253.128:3001/api/positions/${currentTaskIdRef.current}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ 
+                    status: 'IN_POSITION', 
+                    entryPrice,
+                    positionSize,
+                    baseQuantity: baseQuantityRef.current
+                })
+              });
+            }
             
             const targets = {
                 t1: entryPrice * 1.01,
@@ -314,11 +385,25 @@ try {
     
     const positionId = currentTaskIdRef.current;
 
-    const res = await placeOrder('sell', '0.0001');
+    const btcToSell = baseQuantityRef.current;
+    if (btcToSell <= 0) {
+        addLog("❌ Error al cerrar: Cantidad de BTC en posición es cero o inválida.");
+        // Reset state anyway to be safe
+        setBotStatus('IDLE');
+        setTrailingStop(null);
+        entryPriceRef.current = 0;
+        positionSizeRef.current = 0;
+        baseQuantityRef.current = 0;
+        return;
+    }
+
+    addLog(`💸 Intentando vender ${btcToSell.toFixed(6)} BTC...`);
+    const res = await placeOrder('sell', btcToSell.toFixed(6));
     setBotStatus('IDLE');
     setTrailingStop(null);
     entryPriceRef.current = 0;
     positionSizeRef.current = 0;
+    baseQuantityRef.current = 0;
     
     if (positionId) {
       await fetch(`http://31.97.253.128:3001/api/positions/${positionId}`, { method: 'DELETE' });
@@ -392,15 +477,44 @@ try {
 
   const handleStartBot = async () => {
     if (botStatus === 'IDLE') {
-        addLog("🚀 Iniciando motor de estrategia. Esperando datos de mercado...");
-        setBotStatus('ANALYZING');
+        addLog("🚀 Iniciando motor de estrategia. Creando tarea en backend...");
+        try {
+            const res = await fetch('http://31.97.253.128:3001/api/positions', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({}) // No se necesita cuerpo
+            });
+            if (res.ok) {
+                const newPosition = await res.json();
+                currentTaskIdRef.current = newPosition.id;
+                addLog(`✅ Tarea ${newPosition.id} registrada. Iniciando análisis.`);
+                setBotStatus('ANALYZING');
+                refreshOpenPositions();
+            } else {
+                addLog("❌ Error al registrar la tarea en el servidor.");
+            }
+        } catch (e) {
+            addLog("❌ Error de red. No se pudo comunicar con el backend.");
+        }
     } else {
         if (botStatus === 'IN_POSITION' || botStatus === 'TRAILING_ACTIVE') {
             addLog("⚠️ No se puede detener mientras hay una operación activa. Cierre la posición primero.");
             return;
         }
-        addLog("🛑 Deteniendo motor de estrategia.");
+        addLog("🛑 Deteniendo motor de estrategia. Eliminando tarea del backend...");
+        if (currentTaskIdRef.current) {
+            try {
+                await fetch(`http://31.97.253.128:3001/api/positions/${currentTaskIdRef.current}`, {
+                    method: 'DELETE'
+                });
+                addLog(`✅ Tarea ${currentTaskIdRef.current} eliminada del servidor.`);
+            } catch (e) {
+                addLog("❌ Error de red al intentar eliminar la tarea.");
+            }
+        }
+        currentTaskIdRef.current = null;
         setBotStatus('IDLE');
+        refreshOpenPositions();
     }
   };
 
@@ -459,8 +573,8 @@ try {
               <span className={`stat-value ${isServerAlive ? 'text-green' : 'text-red'}`}>{isServerAlive ? 'EN LÍNEA' : 'OFFLINE'}</span>
             </div>
             <div className="stat-item">
-              <span className="stat-label">Balance Sim.</span>
-              <span className="stat-value">${botBalance.toLocaleString()}</span>
+              <span className="stat-label">Balance USDT</span>
+              <span className="stat-value">${botBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
             </div>
             {trailingStop && botStatus !== 'IDLE' && (
               <div className="stat-item stop-active">

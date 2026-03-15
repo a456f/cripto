@@ -127,21 +127,18 @@ app.post('/api/place-order', async (req, res) => {
 
 // --- GESTIÓN DE POSICIONES ABIERTAS (TAREAS) ---
 app.post('/api/positions', (req, res) => {
-    const { strategy, amount } = req.body;
+    // Se asume que solo hay una tarea activa a la vez desde esta UI.
+    // Al iniciar, se crea una nueva tarea que representa el estado "ANALYZING".
     const position = {
-        ...req.body,
         id: `TASK-${Date.now()}`,
         startTime: new Date().toISOString(),
-        status: 'ANALYZING_MARKET',
-        logs: [`[${new Date().toLocaleTimeString()}] Tarea iniciada con estrategia ${strategy} y monto ${amount} USDT.`]
+        status: 'ANALYZING',
+        logs: [`[${new Date().toLocaleTimeString()}] Tarea de análisis iniciada.`]
     };
 
-    // Aquí iniciarías la lógica de trading en el backend para esta tarea específica.
     let positions = [];
-    if (fs.existsSync(POSITIONS_FILE)) {
-        try { positions = JSON.parse(fs.readFileSync(POSITIONS_FILE)); } catch (e) { positions = []; }
-    }
-    positions.push(position);
+    // Sobrescribimos cualquier tarea anterior para asegurar que solo haya una activa.
+    positions = [position];
     fs.writeFileSync(POSITIONS_FILE, JSON.stringify(positions, null, 2));
     res.status(201).send(position);
 });
@@ -170,6 +167,23 @@ app.patch('/api/positions/:id/logs', (req, res) => {
     if (index !== -1) {
         positions[index].logs.push(log); // El frontend ya envía el log con timestamp
         fs.writeFileSync(POSITIONS_FILE, JSON.stringify(positions, null, 2));
+        return res.send(positions[index]);
+    }
+    res.status(404).send();
+});
+
+app.patch('/api/positions/:id', (req, res) => {
+    const { id } = req.params;
+    const updates = req.body;
+    if (!fs.existsSync(POSITIONS_FILE)) return res.status(404).send();
+    
+    let positions = JSON.parse(fs.readFileSync(POSITIONS_FILE));
+    const index = positions.findIndex(p => p.id === id);
+    if (index !== -1) {
+        // Merge updates into the existing position
+        positions[index] = { ...positions[index], ...updates };
+        fs.writeFileSync(POSITIONS_FILE, JSON.stringify(positions, null, 2));
+        console.log(`🔄 Tarea ${id} actualizada con estado: ${updates.status || positions[index].status}`);
         return res.send(positions[index]);
     }
     res.status(404).send();
