@@ -82,6 +82,49 @@ app.get('/api/bitget-assets', async (req, res) => {
 
   }
 })
+
+app.post('/api/place-order', async (req, res) => {
+    try {
+        const { side, size } = req.body;
+        const timestamp = Date.now().toString();
+        const method = 'POST';
+        const path = '/api/v2/spot/trade/place-order';
+        
+        // Configuración para orden de mercado en BTCUSDT
+        const bodyObj = {
+            symbol: 'BTCUSDT',
+            side: side,
+            orderType: 'market',
+            size: size,
+            force: 'gtc'
+        };
+        const body = JSON.stringify(bodyObj);
+
+        const crypto = require('crypto');
+        const sign = crypto.createHmac('sha256', process.env.BITGET_SECRET_KEY)
+            .update(timestamp + method + path + body)
+            .digest('base64');
+
+        const response = await fetch(`https://api.bitget.com${path}`, {
+            method: method,
+            headers: {
+                'ACCESS-KEY': process.env.BITGET_API_KEY,
+                'ACCESS-SIGN': sign,
+                'ACCESS-PASSPHRASE': process.env.BITGET_PASSPHRASE,
+                'ACCESS-TIMESTAMP': timestamp,
+                'Content-Type': 'application/json'
+            },
+            body: body
+        });
+
+        const data = await response.json();
+        res.json(data);
+    } catch (err) {
+        console.error("Bitget order error:", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // --- GESTIÓN DE POSICIONES ABIERTAS (TAREAS) ---
 app.post('/api/positions', (req, res) => {
     const { strategy, amount } = req.body;

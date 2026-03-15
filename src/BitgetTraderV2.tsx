@@ -3,12 +3,12 @@ import React, { useState, useEffect, useRef } from 'react';
 import { FiKey, FiLock, FiShield, FiDollarSign, FiActivity, FiTerminal, FiSettings, FiPlay, FiTrendingUp, FiCheckCircle, FiBriefcase, FiTarget, FiInfo, FiCpu, FiList, FiXCircle, FiClock } from 'react-icons/fi';
 import CryptoJS from 'crypto-js';
 import { useBitgetSocket } from './useBitgetSocket';
-import * as marketData from './marketData';
-import * as strategy from './strategy';
-import * as signals from './signals';
-import * as riskManager from './riskManager';
-import * as trader from './trader';
-import { analyzeMarketWithAI } from './claudeService';
+import { processStream, type Candle } from './marketData';
+import { getSignalForTimeframe, type TimeframeAnalysis } from './strategy';
+import { getFinalSignal, type TimeframeSignals } from './signals';
+import { calculatePositionSize } from './riskManager';
+import { placeOrder } from './trader';
+// import { analyzeMarketWithAI } from './claudeService'; // AI logic is replaced by the new strategy
 import './BitgetTraderV2.css';
 
 type BotStatus =
@@ -19,7 +19,8 @@ type BotStatus =
   | 'BUYING'
   | 'IN_POSITION'
   | 'TRAILING_ACTIVE'
-  | 'EXITING';
+  | 'EXITING'
+  | 'ANALYZING';
 
 
 const BitgetTraderV2: React.FC = () => {
@@ -33,34 +34,26 @@ const BitgetTraderV2: React.FC = () => {
   const [botStatus, setBotStatus] = useState<BotStatus>('IDLE');
   const [logs, setLogs] = useState<string[]>([]);
   const [currentPrice, setCurrentPrice] = useState<number>(0);
-  const [currentVol, setCurrentVol] = useState<number>(0);
   const [trailingStop, setTrailingStop] = useState<number | null>(null);
-  const [aiConfidence, setAiConfidence] = useState<number>(0);
-  const [marketPhase, setMarketPhase] = useState<string>('N/A');
-  const [aiAnalysis, setAiAnalysis] = useState<{ reason: string; confidence: number; decision: string } | null>(null);
   const [unrealizedPnl, setUnrealizedPnl] = useState({ percent: 0, usdt: 0 });
   const [botBalance, setBotBalance] = useState<number>(1000); // Balance simulado para riskManager
-type StrategyKey = '5m' | '4h' | '6h';
-
-const [selectedStrategy, setSelectedStrategy] = useState<StrategyKey>('5m');
-
-const [strategyAmounts, setStrategyAmounts] = useState<Record<StrategyKey, string>>({
-  '5m': '15',
-  '4h': '100',
-  '6h': '250'
-});
   const [openPositions, setOpenPositions] = useState<any[]>([]);
-  const [aiReason, setAiReason] = useState<string>('');
   const [recentTrades, setRecentTrades] = useState<any[]>([]);
-  const [isAiAnalyzing, setIsAiAnalyzing] = useState(false);
   const [isVerifying, setIsVerifying] = useState(false);
   const currentTaskIdRef = useRef<string | null>(null);
+  const [timeframeAnalyses, setTimeframeAnalyses] = useState<Record<string, TimeframeAnalysis>>({
+    '5m': { trend: 'NEUTRAL', volume: 'NO_CONFIRMATION', sma: 'NEUTRAL', rsi: 'NEUTRAL', macd: 'NEUTRAL', finalSignal: 'NEUTRAL' },
+    '1h': { trend: 'NEUTRAL', volume: 'NO_CONFIRMATION', sma: 'NEUTRAL', rsi: 'NEUTRAL', macd: 'NEUTRAL', finalSignal: 'NEUTRAL' },
+    '4h': { trend: 'NEUTRAL', volume: 'NO_CONFIRMATION', sma: 'NEUTRAL', rsi: 'NEUTRAL', macd: 'NEUTRAL', finalSignal: 'NEUTRAL' },
+  });
 
   // --- REFERENCIAS PARA ESTRATEGIA ---
-  const historyRef = useRef<marketData.Candle[]>([]);
+  const candles1m = useRef<Candle[]>([]);
+  const candles5m = useRef<Candle[]>([]);
+  const candles1h = useRef<Candle[]>([]);
+  const candles4h = useRef<Candle[]>([]);
   const entryPriceRef = useRef<number>(0);
   const positionSizeRef = useRef<number>(0);
-  const lastAiAnalysisTimeRef = useRef<number>(0);
   const highDuringTradeRef = useRef<number>(0);
 const { lastMessage, connectionStatus } = useBitgetSocket([
   { instType: 'SPOT', channel: 'candle1m', instId: 'BTCUSDT' }
@@ -193,203 +186,127 @@ try {
     setIsVerifying(false);
   };
 
-  // --- EJECUCIÓN DE ÓRDENES ---
-  const placeOrder = async (side: 'buy' | 'sell', size: string) => {
-    const timestamp = Date.now().toString();
-    const path = '/api/v2/spot/trade/place-order';
-    const body = JSON.stringify({
-      symbol: 'BTCUSDT',
-      side,
-      orderType: 'market',
-      size,
-      force: 'gtc' // Good-Til-Canceled
-    });
+  const aggregateCandles = (new1mCandle: Candle) => {
+    const candleTime = new Date(parseInt(new1mCandle.timestamp));
+    
+    const timeframes = { '5m': 5, '1h': 60, '4h': 240 };
+    let analysisTriggered = false;
 
-try {
+    for (const [tf, minutes] of Object.entries(timeframes)) {
+        const candleArray = tf === '5m' ? candles5m : tf === '1h' ? candles1h : candles4h;
+        const interval = minutes * 60 * 1000;
+        const candleTimestamp = Math.floor(candleTime.getTime() / interval) * interval;
 
-  const res = await fetch('/local-server/api/place-order', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      side,
-      size
-    })
-  });
+        if (candleArray.current.length > 0 && candleArray.current[0].timestamp === candleTimestamp.toString()) {
+            // Update existing candle
+            const currentTfCandle = candleArray.current[0];
+            currentTfCandle.high = Math.max(currentTfCandle.high, new1mCandle.high);
+            currentTfCandle.low = Math.min(currentTfCandle.low, new1mCandle.low);
+            currentTfCandle.close = new1mCandle.close;
+            currentTfCandle.volume += new1mCandle.volume;
+        } else {
+            // New candle for this timeframe
+            const newTfCandle: Candle = {
+                timestamp: candleTimestamp.toString(),
+                open: new1mCandle.open,
+                high: new1mCandle.high,
+                low: new1mCandle.low,
+                close: new1mCandle.close,
+                volume: new1mCandle.volume,
+            };
+            candleArray.current.unshift(newTfCandle);
+            if (candleArray.current.length > 200) candleArray.current.pop();
 
-  return await res.json();
+            // Trigger analysis on the close of a 5m candle
+            if (tf === '5m' && botStatus === 'ANALYZING') {
+                analysisTriggered = true;
+            }
+        }
+    }
 
-} catch (e: any) {
-
-  return { code: 'ERROR', msg: `Network Error: ${e.message}` };
-
-}
+    if (analysisTriggered) {
+        runStrategyAnalysis();
+    }
   };
 
-  // --- MOTOR DE ESTRATEGIA (ACTUALIZADO POR WEBSOCKET) ---
-// --- MOTOR DE ESTRATEGIA (WEBSOCKET) ---
-useEffect(() => {
+  const runStrategyAnalysis = async () => {
+    if (botStatus !== 'ANALYZING') return;
 
-  if (
-    !lastMessage ||
-    lastMessage.arg?.channel !== 'candle1m' ||
-    !Array.isArray(lastMessage.data) ||
-    lastMessage.data.length === 0
-  ) return;
+    addLog("🧠 Analizando timeframes [4h, 1h, 5m]...");
 
-  const candle = lastMessage.data[0];
+    const analyses: Record<string, TimeframeAnalysis> = {
+        '4h': getSignalForTimeframe(candles4h.current),
+        '1h': getSignalForTimeframe(candles1h.current),
+        '5m': getSignalForTimeframe(candles5m.current),
+    };
+    setTimeframeAnalyses(analyses);
 
-  const price = parseFloat(candle[4]);
-  const volume = parseFloat(candle[5]);
-  const ts = candle[0];
+    const signals: TimeframeSignals = {
+        '4h': analyses['4h'].finalSignal,
+        '1h': analyses['1h'].finalSignal,
+        '5m': analyses['5m'].finalSignal,
+    };
 
-  if (isNaN(price)) return;
+    const finalSignal = getFinalSignal(signals);
 
-  setCurrentPrice(price);
-  setCurrentVol(volume);
-if (botStatus === 'IN_POSITION' && entryPriceRef.current > 0) {
+    const logMessage = `
+    --- ANÁLISIS MULTI-TIMEFRAME ---
+    4h: ${signals['4h']} | 1h: ${signals['1h']} | 5m: ${signals['5m']}
+    ==> SEÑAL FINAL: ${finalSignal}
+    `;
+    addLog(logMessage.replace(/\n\s+/g, '\n').trim());
 
-  const pnlPercent =
-    ((price - entryPriceRef.current) / entryPriceRef.current) * 100;
+    if (finalSignal === 'EXECUTE_LONG') {
+        setBotStatus('BUYING');
+        addLog(`🎯 Señal LONG confirmada. Calculando riesgo y ejecutando orden...`);
+        
+        const stopLossPercent = 0.02; // 2%
+        const positionSize = calculatePositionSize(botBalance, 0.10, stopLossPercent);
+        
+        if (positionSize > botBalance) {
+            addLog(`⚠️ Riesgo muy alto. Tamaño de posición (${positionSize.toFixed(2)}) excede balance (${botBalance}). Abortando.`);
+            setBotStatus('ANALYZING');
+            return;
+        }
 
-  const pnlUsdt =
-    (pnlPercent / 100) * positionSizeRef.current;
+        addLog(`💵 Tamaño de posición calculado: ${positionSize.toFixed(2)} USDT.`);
+        
+        const result = await placeOrder('buy', positionSize.toFixed(4));
 
-  setUnrealizedPnl({
-    percent: pnlPercent,
-    usdt: pnlUsdt
-  });
+        if (result.code === '00000') {
+            const entryPrice = currentPrice;
+            entryPriceRef.current = entryPrice;
+            highDuringTradeRef.current = entryPrice;
+            positionSizeRef.current = positionSize;
 
-}
+            const stopLossPrice = entryPrice * (1 - stopLossPercent);
+            setTrailingStop(stopLossPrice); // Initial stop loss becomes a trailing stop
+            setBotStatus('IN_POSITION');
+            
+            const targets = {
+                t1: entryPrice * 1.01,
+                t2: entryPrice * 1.02,
+                t3: entryPrice * 1.03,
+            };
 
-  // Guardar vela
-  if (
-    historyRef.current.length === 0 ||
-    historyRef.current[0].timestamp !== ts
-  ) {
-
-    historyRef.current = [
-      {
-        timestamp: ts,
-        open: parseFloat(candle[1]),
-        high: parseFloat(candle[2]),
-        low: parseFloat(candle[3]),
-        close: price,
-        volume: volume
-      },
-      ...historyRef.current
-    ].slice(0, 20);
-
-  }
-
-  if (botStatus === 'IDLE') return;
-
-  // --------------------------
-  // TRAILING STOP
-  // --------------------------
-if (botStatus === 'IN_POSITION' && trailingStop) {
-
-  if (price > highDuringTradeRef.current) {
-
-    highDuringTradeRef.current = price;
-
-    const newStop = price * 0.995;
-
-    setTrailingStop(newStop);
-
-    setBotStatus('TRAILING_ACTIVE');
-
-    addLog(`📈 Nuevo máximo detectado: ${price}. Trailing actualizado`);
-
-  }
-
-  if (price <= trailingStop) {
-
-    handleExitPosition(`📉 Trailing stop alcanzado`, price);
-
-  }
-
-  return;
-
-}
-
-
-
-  if (historyRef.current.length < 5) return;
-
-  // --------------------------
-  // ANALISIS MERCADO
-  // --------------------------
-
-  if (botStatus === 'ANALYZING_MARKET') {
-
-    const structure = strategy.analyzeTrend(historyRef.current);
-
-    if (structure.trend === 'BULLISH') {
-
-      addLog("📈 Tendencia alcista detectada. Esperando pullback");
-
-      setBotStatus('WAITING_PULLBACK');
-
+            addLog(`
+            ✅ ORDEN DE COMPRA EJECUTADA
+            Entrada: ${entryPrice.toFixed(2)}
+            Stop Loss Inicial: ${stopLossPrice.toFixed(2)}
+            Target 1 (50%): ${targets.t1.toFixed(2)}
+            Target 3 (Resto): ${targets.t3.toFixed(2)}
+            `);
+            // NOTE: Logic for partial take profit needs to be implemented here.
+            // The current implementation only has a trailing stop for the whole position.
+        } else {
+            addLog(`❌ Error al ejecutar orden: ${result.msg}`);
+            setBotStatus('ANALYZING');
+        }
     }
-
-  }
-
-  // --------------------------
-  // PULLBACK
-  // --------------------------
-
-  else if (botStatus === 'WAITING_PULLBACK') {
-
-    const structure = strategy.analyzeTrend(historyRef.current);
-
-    const signal = signals.detectSignal(
-      structure.trend,
-      price,
-      historyRef.current[1]
-    );
-
-    if (signal === 'LONG_ENTRY') {
-
-      if (isAiAnalyzing) return;
-
-      setBotStatus('AI_CONFIRMATION');
-
-      setIsAiAnalyzing(true);
-
-      addLog("🧠 Consultando IA para validar entrada");
-
-      analyzeMarketWithAI(historyRef.current)
-        .then(ai => {
-
-          if (ai.decision === 'BUY') {
-
-            setAiConfidence(ai.confidence || 0);
-
-            addLog(`✅ IA aprobó entrada (${ai.confidence}%)`);
-
-            setBotStatus('BUYING');
-
-            executeTrade(strategyAmounts[selectedStrategy]);
-
-          } else {
-
-            addLog(`✋ IA rechazó entrada: ${ai.reason}`);
-
-            setBotStatus('ANALYZING_MARKET');
-
-          }
-
-        })
-        .finally(() => setIsAiAnalyzing(false));
-
-    }
-
-  }
-
-}, [lastMessage, botStatus, trailingStop]);
-
+    // NOTE: Shorting logic for SPOT is selling the asset.
+    // If a 'EXECUTE_SHORT' signal is received, you would sell your BTC holdings.
+    // This implementation focuses on the LONG side as per the typical BTC/USDT spot strategy.
+  };
 
   // --- LÓGICA DE SALIDA CENTRALIZADA ---
   const handleExitPosition = async (reasonMsg: string, price: number) => {
@@ -417,53 +334,73 @@ if (botStatus === 'IN_POSITION' && trailingStop) {
     refreshTrades();
     refreshOpenPositions();
   };
-const executeTrade = async (size: string) => {
 
-  const result = await placeOrder('buy', size);
+  // --- MOTOR DE ESTRATEGIA (WEBSOCKET) ---
+  useEffect(() => {
+    if (
+      !lastMessage ||
+      lastMessage.arg?.channel !== 'candle1m' ||
+      !Array.isArray(lastMessage.data) ||
+      lastMessage.data.length === 0
+    ) return;
 
-  if (result.code === '00000') {
+    const newCandleData = processStream(lastMessage);
+    if (!newCandleData) return;
 
-    entryPriceRef.current = currentPrice;
-    highDuringTradeRef.current = currentPrice;
-    positionSizeRef.current = parseFloat(size);
+    setCurrentPrice(newCandleData.close);
 
-    setTrailingStop(currentPrice * 0.996);
-    setBotStatus('IN_POSITION');
+    // Update 1m candles
+    if (candles1m.current.length === 0 || candles1m.current[0].timestamp !== newCandleData.timestamp) {
+        candles1m.current.unshift(newCandleData);
+        if (candles1m.current.length > 400) candles1m.current.pop(); // Keep enough for 4h aggregation
+        
+        // Trigger aggregation for other timeframes
+        aggregateCandles(newCandleData);
+    } else {
+        // Update current 1m candle
+        candles1m.current[0] = newCandleData;
+    }
 
-    addLog(`✅ Orden ejecutada. Precio ${currentPrice}`);
+    // PNL Calculation
+    if (botStatus === 'IN_POSITION' && entryPriceRef.current > 0) {
+      const pnlPercent = ((newCandleData.close - entryPriceRef.current) / entryPriceRef.current) * 100;
+      const pnlUsdt = (pnlPercent / 100) * positionSizeRef.current;
+      setUnrealizedPnl({ percent: pnlPercent, usdt: pnlUsdt });
+    }
 
-  } else {
+    // Trailing Stop Logic
+    if ((botStatus === 'IN_POSITION' || botStatus === 'TRAILING_ACTIVE') && trailingStop) {
+      if (newCandleData.close > highDuringTradeRef.current) {
+        highDuringTradeRef.current = newCandleData.close;
+        const newStop = newCandleData.close * 0.98; // 2% trailing stop
+        if (newStop > trailingStop) {
+          setTrailingStop(newStop);
+          setBotStatus('TRAILING_ACTIVE');
+          addLog(`📈 Nuevo máximo en trade: ${newCandleData.close.toFixed(2)}. Trailing Stop actualizado a ${newStop.toFixed(2)}`);
+        }
+      }
+      if (newCandleData.close <= trailingStop) {
+        handleExitPosition(`📉 Trailing stop alcanzado en ${trailingStop.toFixed(2)}`, newCandleData.close);
+      }
+    }
+  }, [lastMessage, botStatus, trailingStop]);
 
-    addLog(`❌ Error al ejecutar orden: ${result.msg}`);
-    setBotStatus('ANALYZING_MARKET');
-
-  }
-
-};
   useEffect(() => {
     refreshTrades();
     refreshOpenPositions();
   }, []);
 
   const handleStartBot = async () => {
-    if (!apiKey || !secretKey || !passphrase) return alert("Por favor, ingresa tus credenciales API.");
-    const amount = strategyAmounts[selectedStrategy];
-    addLog(`🚀 Lanzando tarea al backend con estrategia ${selectedStrategy} y monto ${amount} USDT...`);
-    
-    try {
-      const res = await fetch('http://31.97.253.128:3001/api/positions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ strategy: selectedStrategy, amount })
-      });
-      if (res.ok) {
-        addLog("✅ Tarea registrada en el servidor. El backend tomará el control.");
-        refreshOpenPositions();
-      } else {
-        addLog("❌ Error al registrar la tarea en el servidor.");
-      }
-    } catch (e) {
-      addLog("❌ Error de red. No se pudo comunicar con el backend.");
+    if (botStatus === 'IDLE') {
+        addLog("🚀 Iniciando motor de estrategia. Esperando datos de mercado...");
+        setBotStatus('ANALYZING');
+    } else {
+        if (botStatus === 'IN_POSITION' || botStatus === 'TRAILING_ACTIVE') {
+            addLog("⚠️ No se puede detener mientras hay una operación activa. Cierre la posición primero.");
+            return;
+        }
+        addLog("🛑 Deteniendo motor de estrategia.");
+        setBotStatus('IDLE');
     }
   };
 
@@ -522,14 +459,10 @@ const executeTrade = async (size: string) => {
               <span className={`stat-value ${isServerAlive ? 'text-green' : 'text-red'}`}>{isServerAlive ? 'EN LÍNEA' : 'OFFLINE'}</span>
             </div>
             <div className="stat-item">
-              <span className="stat-label">Confianza IA</span>
-              <span className="stat-value" style={{ color: aiConfidence > 75 ? '#3fb950' : '#d29922' }}>{aiConfidence}%</span>
+              <span className="stat-label">Balance Sim.</span>
+              <span className="stat-value">${botBalance.toLocaleString()}</span>
             </div>
-            <div className="stat-item">
-              <span className="stat-label">Volumen (1m)</span>
-              <span className="stat-value">{currentVol.toFixed(4)}</span>
-            </div>
-            {trailingStop && (
+            {trailingStop && botStatus !== 'IDLE' && (
               <div className="stat-item stop-active">
                 <span className="stat-label">Trailing Stop</span>
                 <span className="stat-value">${trailingStop.toFixed(2)}</span>
@@ -542,32 +475,18 @@ const executeTrade = async (size: string) => {
           <div className="card-header">
             <FiDollarSign /> <h3>Parámetros de Trading</h3>
           </div>
-          <div className="strategy-selector">
-            <div className="card-header" style={{ border: 'none', paddingBottom: 0, marginBottom: 0 }}>
-              <FiClock /> <h4>Seleccionar Estrategia</h4>
-            </div>
-         <div className="strategy-options">
-  {(['5m', '4h', '6h'] as StrategyKey[]).map(s => (
-    <button
-      key={s}
-      className={`strategy-btn ${selectedStrategy === s ? 'active' : ''}`}
-      onClick={() => setSelectedStrategy(s)}
-    >
-      {s}
-    </button>
-  ))}
-</div>
-            <div className="amount-group">
-              <label className="amount-label">Monto para {selectedStrategy} (USDT)</label>
-              <input 
-                type="text" 
-                value={strategyAmounts[selectedStrategy]} 
-                onChange={e => setStrategyAmounts(prev => ({ ...prev, [selectedStrategy]: e.target.value }))} 
-                className="trader-v2-input" />
-            </div>
+          <div className="risk-params">
+            <div className="param-item"><span>Balance:</span> <span>{botBalance.toFixed(2)} USDT</span></div>
+            <div className="param-item"><span>Riesgo por Op.:</span> <span>10% ({ (botBalance * 0.1).toFixed(2) } USDT)</span></div>
+            <div className="param-item"><span>Stop Loss:</span> <span>2%</span></div>
           </div>
-          <button onClick={handleStartBot} disabled={botStatus !== 'IDLE'} className="btn-operate">
-            <FiPlay /> OPERAR ESTRATEGIA
+          <button 
+            onClick={handleStartBot} 
+            className={`btn-operate ${botStatus !== 'IDLE' ? 'active' : ''}`}
+            disabled={botStatus === 'BUYING' || botStatus === 'EXITING'}
+          >
+            <FiPlay /> 
+            {botStatus === 'IDLE' ? 'INICIAR BOT' : 'DETENER BOT'}
           </button>
         </div>
       </div>
@@ -642,28 +561,20 @@ const executeTrade = async (size: string) => {
         <div className="card-header">
           <FiCpu /> <h3>Monitor de Sistema</h3>
         </div>
-        <div className="process-grid">
-          <div className="process-item">
-            <span className="process-label">Estado del Bot</span>
-            <span className="process-status highlight">
-              {botStatus === 'ANALYZING_MARKET' ? 'ANALIZANDO MERCADO' :
-               botStatus === 'WAITING_PULLBACK' ? 'ESPERANDO SEÑAL' :
-               botStatus === 'IN_POSITION' ? 'EN OPERACIÓN' :
-               botStatus}
-            </span>
-          </div>
-          <div className="process-item">
-            <span className="process-label">Fase de Mercado (IA)</span>
-            <span className="process-status">
-              {marketPhase}
-            </span>
-          </div>
-          <div className="process-item">
-            <span className="process-label">Análisis IA</span>
-            <span className={`process-status ${isAiAnalyzing ? 'loading' : ''}`}>
-              {isAiAnalyzing ? "PROCESANDO..." : aiAnalysis?.reason || "En espera"}
-            </span>
-          </div>
+        <div className="timeframe-analysis-grid">
+          {['4h', '1h', '5m'].map(tf => (
+            <div key={tf} className="timeframe-card">
+              <div className="timeframe-header">
+                <FiClock /> {tf}
+              </div>
+              <div className={`timeframe-signal ${timeframeAnalyses[tf]?.finalSignal}`}>
+                {timeframeAnalyses[tf]?.finalSignal || 'NEUTRAL'}
+              </div>
+              <div className="timeframe-indicators">
+                Trend: {timeframeAnalyses[tf]?.trend.slice(0,4)} · Vol: {timeframeAnalyses[tf]?.volume.slice(0,4)} · SMA: {timeframeAnalyses[tf]?.sma.slice(0,4)} · RSI: {timeframeAnalyses[tf]?.rsi.slice(0,4)} · MACD: {timeframeAnalyses[tf]?.macd.slice(0,4)}
+              </div>
+            </div>
+          ))}
         </div>
       </div>
 
