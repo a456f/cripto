@@ -248,7 +248,7 @@ class BotEngine {
 
         try {
 
-            const sizeUSDT = 2; // puedes cambiarlo luego por cálculo dinámico
+            const sizeUSDT = 10; // puedes cambiarlo luego por cálculo dinámico
 
             const res = await fetch("http://localhost:3001/api/place-order", {
                 method: "POST",
