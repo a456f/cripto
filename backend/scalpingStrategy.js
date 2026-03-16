@@ -2,19 +2,13 @@
 
 const SCALPING_PARAMS = {
 
-    // micro dip para comprar barato
-    DIP_PERCENT: 0.0004,      // 0.04%
+    DIP_PERCENT: 0.00015,      // 0.015%
+    BREAKOUT_PERCENT: 0.00015, // 0.015%
 
-    // ruptura de máximo
-    BREAKOUT_PERCENT: 0.0003, // 0.03%
+    TAKE_PROFIT_PERCENT: 0.0006, // 0.06%
+    STOP_LOSS_PERCENT: 0.0005,   // 0.05%
 
-    // ganancia rápida
-    TAKE_PROFIT_PERCENT: 0.0012, // 0.12%
-
-    // protección rápida
-    STOP_LOSS_PERCENT: 0.0009, // 0.09%
-
-    LOOKBACK_PERIOD: 3
+    LOOKBACK_PERIOD: 4
 };
 
 
@@ -35,38 +29,23 @@ function evaluateScalpingBuy(state, candle, log) {
     const maxHigh = Math.max(...recent.map(c => c.high));
     const minLow = Math.min(...recent.map(c => c.low));
 
-    const lastClose = history[history.length - 1].close;
-
-    const momentumUp =
-        candle.close > candle.open &&
-        candle.close > lastClose;
-
-    const volatility =
-        (maxHigh - minLow) / maxHigh;
-
-    // evita mercados muertos
-    if (volatility < 0.0002) {
-        return null;
-    }
-
     const dipTrigger = maxHigh * (1 - SCALPING_PARAMS.DIP_PERCENT);
     const breakoutTrigger = maxHigh * (1 + SCALPING_PARAMS.BREAKOUT_PERCENT);
 
+    const momentumUp =
+        candle.close > candle.open;
 
-    // compra por dip
+    // comprar en micro dip
     if (candle.close <= dipTrigger && momentumUp) {
 
-        log(`⚡ PRO BUY DIP → ${candle.close}`);
-
+        log(`⚡ MICRO BUY DIP → ${candle.close}`);
         return 'EXECUTE_BUY';
     }
 
-
-    // compra por breakout
+    // comprar en micro breakout
     if (candle.close >= breakoutTrigger && momentumUp) {
 
-        log(`🚀 PRO BUY BREAKOUT → ${candle.close}`);
-
+        log(`🚀 MICRO BUY BREAKOUT → ${candle.close}`);
         return 'EXECUTE_BUY';
     }
 
@@ -89,19 +68,15 @@ function evaluateScalpingSell(state, candle, log) {
     const takeProfit = entry * (1 + SCALPING_PARAMS.TAKE_PROFIT_PERCENT);
     const stopLoss = entry * (1 - SCALPING_PARAMS.STOP_LOSS_PERCENT);
 
-
     if (candle.close >= takeProfit) {
 
-        log(`💰 PRO TAKE PROFIT → ${candle.close}`);
-
+        log(`💰 MICRO TAKE PROFIT → ${candle.close}`);
         return 'EXECUTE_SELL';
     }
 
-
     if (candle.close <= stopLoss) {
 
-        log(`🛑 PRO STOP LOSS → ${candle.close}`);
-
+        log(`🛑 MICRO STOP LOSS → ${candle.close}`);
         return 'EXECUTE_SELL';
     }
 
@@ -110,8 +85,6 @@ function evaluateScalpingSell(state, candle, log) {
 
 
 module.exports = {
-
     evaluateScalpingBuy,
     evaluateScalpingSell
-
 };
