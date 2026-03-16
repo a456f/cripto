@@ -2,16 +2,33 @@
 
 const SCALPING_PARAMS = {
 
-    DIP_PERCENT: 0.001,
-    BREAKOUT_PERCENT: 0.001,
+    DIP_PERCENT: 0.0015,
+    BREAKOUT_PERCENT: 0.0005,
 
-    TAKE_PROFIT_PERCENT: 0.003, // 0.3%
-    STOP_LOSS_PERCENT: 0.002,   // 0.2%
+    TAKE_PROFIT_PERCENT: 0.003,
+    STOP_LOSS_PERCENT: 0.002,
 
-    TRAILING_PERCENT: 0.0015,   // 0.15%
+    TRAILING_PERCENT: 0.0015,
 
-    LOOKBACK_PERIOD: 5
+    LOOKBACK_PERIOD: 8
 };
+
+
+// ======================
+// EMA SIMPLE
+// ======================
+
+function calculateEMA(history, period = 8) {
+
+    if (history.length < period) return null;
+
+    const closes = history.slice(-period).map(c => c.close);
+
+    const avg =
+        closes.reduce((a, b) => a + b, 0) / closes.length;
+
+    return avg;
+}
 
 
 // ======================
@@ -30,20 +47,43 @@ function evaluateScalpingBuy(state, candle, log) {
 
     const maxHigh = Math.max(...recent.map(c => c.high));
 
-    const dipTrigger = maxHigh * (1 - SCALPING_PARAMS.DIP_PERCENT);
-    const breakoutTrigger = maxHigh * (1 + SCALPING_PARAMS.BREAKOUT_PERCENT);
+    const dipTrigger =
+        maxHigh * (1 - SCALPING_PARAMS.DIP_PERCENT);
 
-    // BUY DIP con rebote real
-    if (candle.low <= dipTrigger && candle.close > candle.open) {
+    const ema = calculateEMA(history);
+
+    if (!ema) return null;
+
+    // filtro de tendencia
+    if (candle.close < ema) {
+        return null;
+    }
+
+    // evitar velas gigantes
+    const candleMove =
+        (candle.high - candle.low) / candle.low;
+
+    if (candleMove > 0.003) {
+        return null;
+    }
+
+    // BUY DIP REVERSAL
+    if (
+        candle.low <= dipTrigger &&
+        candle.close > candle.open
+    ) {
 
         log(`⚡ BUY DIP REVERSAL → ${candle.close}`);
         return 'EXECUTE_BUY';
     }
 
-    // BUY BREAKOUT fuerte
-    if (candle.close >= breakoutTrigger && candle.close > candle.open) {
+    // BUY BREAKOUT REAL
+    if (
+        candle.high > maxHigh &&
+        candle.close > candle.open
+    ) {
 
-        log(`🚀 BUY BREAKOUT → ${candle.close}`);
+        log(`🚀 BUY REAL BREAKOUT → ${candle.close}`);
         return 'EXECUTE_BUY';
     }
 
@@ -63,15 +103,19 @@ function evaluateScalpingSell(state, candle, log) {
 
     const entry = state.position.entryPrice;
 
-    const takeProfit = entry * (1 + SCALPING_PARAMS.TAKE_PROFIT_PERCENT);
-    const stopLoss = entry * (1 - SCALPING_PARAMS.STOP_LOSS_PERCENT);
+    const takeProfit =
+        entry * (1 + SCALPING_PARAMS.TAKE_PROFIT_PERCENT);
+
+    const stopLoss =
+        entry * (1 - SCALPING_PARAMS.STOP_LOSS_PERCENT);
 
     // guardar máximo alcanzado
     if (!state.maxPrice || candle.high > state.maxPrice) {
         state.maxPrice = candle.high;
     }
 
-    const trailingStop = state.maxPrice * (1 - SCALPING_PARAMS.TRAILING_PERCENT);
+    const trailingStop =
+        state.maxPrice * (1 - SCALPING_PARAMS.TRAILING_PERCENT);
 
     // TAKE PROFIT
     if (candle.close >= takeProfit) {
@@ -82,7 +126,11 @@ function evaluateScalpingSell(state, candle, log) {
     }
 
     // TRAILING PROFIT
-    if (state.maxPrice && candle.close <= trailingStop && state.maxPrice > entry) {
+    if (
+        state.maxPrice &&
+        candle.close <= trailingStop &&
+        state.maxPrice > entry
+    ) {
 
         log(`📉 SELL TRAILING PROFIT → ${candle.close}`);
         state.maxPrice = null;
