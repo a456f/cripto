@@ -445,7 +445,7 @@ class BotEngine {
             }
 
             // Usar el balance completo para la compra.
-            const sizeUSDT = availableUsdt;
+            const sizeUSDT = availableUsdt * 0.97;
             this.log(`💸 Usando balance completo: ${sizeUSDT.toFixed(2)} USDT para la compra.`);
 
             const res = await fetch("http://localhost:3001/api/place-order", {
