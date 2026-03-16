@@ -33,6 +33,21 @@ class BotEngine {
         };
     }
 
+    async getAssets() {
+        try {
+            const res = await fetch('http://localhost:3001/api/bitget-assets');
+            if (!res.ok) return [];
+            const data = await res.json();
+            if (data.code === '00000' && Array.isArray(data.data)) {
+                return data.data;
+            }
+            return [];
+        } catch (e) {
+            this.log(`❌ Error obteniendo assets: ${e.message}`);
+            return [];
+        }
+    }
+
     log(message) {
         const timeMsg = `[${new Date().toLocaleTimeString()}] ${message}`;
         console.log(timeMsg); // Mantenemos el log en la consola del servidor
@@ -124,11 +139,20 @@ class BotEngine {
             if (options.tradeMode) {
                 this.state.tradeMode = options.tradeMode;
             }
-            this.state.candles1mHistory = []; // Limpiar historial en cada inicio
+            this.state.candles1mHistory = [];
+
+            // Sincroniza el estado con el balance real del exchange antes de empezar
+            await this.syncStateWithExchange();
+
             await this.loadHistoricalData();
-            this.state.status = 'ANALYZING';
+            
+            // Si después de sincronizar no estamos en posición, empezamos a analizar
+            if (this.state.status !== 'IN_POSITION') {
+                this.state.status = 'ANALYZING';
+            }
+
             this.connectWebSocket();
-            this.log(`🚀 [BOT ENGINE] Iniciado en modo ${this.state.tradeMode}. Analizando mercado...`);
+            this.log(`🚀 [BOT ENGINE] Iniciado en modo ${this.state.tradeMode}. Estado actual: ${this.state.status}`);
             this.heartbeatInterval = setInterval(() => {
                this.log(`💓 BOT ALIVE | price: ${this.state.currentPrice}`)
             }, 60000);
@@ -165,6 +189,48 @@ class BotEngine {
         clearInterval(this.heartbeatInterval);
         this.log("🛑 [FRENO DE MANO] Bot detenido y desconectado correctamente.");
         return true;
+    }
+
+    async syncStateWithExchange() {
+        this.log("🔄 Sincronizando estado con el balance del exchange...");
+        try {
+            const assets = await this.getAssets();
+            const btc = assets.find(a => a.coin === 'BTC');
+            const usdt = assets.find(a => a.coin === 'USDT');
+
+            const availableBtc = btc ? parseFloat(btc.available) : 0;
+            const availableUsdt = usdt ? parseFloat(usdt.available) : 0;
+
+            // Necesitamos un precio para evaluar el valor de BTC
+            const priceRes = await fetch(`http://localhost:3001/api/historical-candles?symbol=${this.config.symbol}&granularity=1min&limit=1`);
+            const priceData = await priceRes.json();
+            const currentPrice = parseFloat(priceData[0][4]);
+            this.state.currentPrice = currentPrice;
+
+            const btcValueUSD = availableBtc * currentPrice;
+
+            this.log(`🏦 Balance detectado: ${availableUsdt.toFixed(2)} USDT, ${availableBtc.toFixed(8)} BTC (≈$${btcValueUSD.toFixed(2)})`);
+
+            // Lógica de decisión: si tenemos más valor en BTC, asumimos que estamos en una posición.
+            if (btcValueUSD > availableUsdt && btcValueUSD > 5.1) { // 5.1 es un umbral seguro sobre el mínimo de trade
+                this.log("✅ Detectada posición existente en BTC. Iniciando en modo 'IN_POSITION' para buscar venta.");
+                this.state.status = 'IN_POSITION';
+                this.state.position = {
+                    // No conocemos el precio de entrada real, así que lo asumimos como el actual para calcular PnL futuro.
+                    entryPrice: currentPrice, 
+                    size: btcValueUSD,
+                    quantity: availableBtc,
+                    highPrice: currentPrice // El Trailing Stop empieza desde aquí
+                };
+                this.state.trailingStop = currentPrice * (1 - this.config.stopLossPercent);
+            } else {
+                this.log("✅ Balance principal en USDT. Iniciando en modo 'ANALYZING' para buscar compra.");
+                this.state.status = 'ANALYZING';
+            }
+        } catch (e) {
+            this.log(`❌ Error sincronizando estado: ${e.message}. Iniciando en modo 'ANALYZING' por defecto.`);
+            this.state.status = 'ANALYZING';
+        }
     }
 
     connectWebSocket() {
@@ -363,17 +429,32 @@ class BotEngine {
         if (this.state.position) return; // Ya en posición
 
         this.state.status = 'BUYING'; // Bloquear estado para evitar compras concurrentes
-        this.log("🎯 [BOT ENGINE] Señal de COMPRA detectada. Ejecutando orden real...");
+        this.log("🎯 [BOT ENGINE] Señal de COMPRA detectada. Verificando balance y ejecutando...");
 
         try {
-            const sizeUSDT = 12; // Aumentado para evitar errores de precisión con mínimos de exchange
+            // Lógica de Rotación: Usar todo el balance de USDT disponible.
+            const assets = await this.getAssets();
+            const usdt = assets.find(a => a.coin === 'USDT');
+            const availableUsdt = usdt ? parseFloat(usdt.available) : 0;
+
+            // El mínimo de Bitget es ~5 USDT. Usamos un buffer.
+            if (availableUsdt < 5.1) {
+                this.log(`⚠️ Compra cancelada. Balance USDT insuficiente (${availableUsdt.toFixed(2)}). Se necesita > 5.1 USDT.`);
+                this.state.status = 'ANALYZING'; // Volver a analizar
+                return;
+            }
+
+            // Usar el balance completo para la compra.
+            const sizeUSDT = availableUsdt;
+            this.log(`💸 Usando balance completo: ${sizeUSDT.toFixed(2)} USDT para la compra.`);
 
             const res = await fetch("http://localhost:3001/api/place-order", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     side: "buy",
-                    size: sizeUSDT
+                    // Enviamos el tamaño con 2 decimales de precisión.
+                    size: sizeUSDT.toFixed(2) 
                 })
             });
 
@@ -392,7 +473,7 @@ class BotEngine {
             this.state.position = {
                 entryPrice: entry,
                 size: sizeUSDT,
-                quantity: Number((sizeUSDT / entry).toFixed(6)),
+                quantity: Number((sizeUSDT / entry).toFixed(8)), // Mayor precisión para crypto
                 highPrice: entry
             };
 
@@ -438,16 +519,29 @@ class BotEngine {
 
     async executeSell() {
 
-        try {
+        if (!this.state.position) {
+            this.log("⚠️ Intento de venta sin posición registrada. Ignorando.");
+            return;
+        }
 
-            const quantity = Number(this.state.position.quantity.toFixed(6));
+        try {
+            // Lógica de Rotación: Vender todo el balance de BTC disponible.
+            const assets = await this.getAssets();
+            const btc = assets.find(a => a.coin === 'BTC');
+            const availableBtc = btc ? parseFloat(btc.available) : 0;
+
+            if (availableBtc <= 0.00001) { // Umbral mínimo para evitar vender polvo
+                this.log(`ℹ️ Venta omitida. No hay suficiente BTC para vender (${availableBtc}). Reseteando estado.`);
+            } else {
+                this.log(`💸 Vendiendo todo el balance de BTC: ${availableBtc.toFixed(8)} BTC.`);
+                const quantity = availableBtc;
 
             const res = await fetch("http://localhost:3001/api/place-order", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     side: "sell",
-                    size: quantity
+                    size: quantity.toFixed(8) // Usar alta precisión para cantidad de crypto
                 })
             });
 
@@ -455,10 +549,12 @@ class BotEngine {
 
             if (data.code !== "00000") {
                 this.log(`❌ Error ejecutando venta: ${data.msg}`);
-                return;
+                // No reseteamos el estado aquí, para que pueda reintentar la venta en el siguiente tick.
+                return; 
             }
 
             this.log("💸 VENTA REAL EJECUTADA");
+            }
 
             this.state.status = "ANALYZING";
             this.state.position = null;
@@ -467,7 +563,6 @@ class BotEngine {
         } catch (err) {
 
             this.log(`❌ Error enviando orden SELL: ${err.message}`);
-            // Considerar qué hacer si la venta falla (ej. reintentar, alertar)
 
         }
     }
@@ -478,7 +573,25 @@ class BotEngine {
     }
     
     getStatus() {
-        return this.state;
+        const statusPayload = {
+            status: this.state.status,
+            tradeMode: this.state.tradeMode,
+            currentPrice: this.state.currentPrice,
+            position: this.state.position,
+            trailingStop: this.state.trailingStop,
+            logs: this.state.logs,
+            unrealizedPnl: { percent: 0, usdt: 0 }
+        };
+
+        if (this.state.status === 'IN_POSITION' && this.state.position && this.state.position.entryPrice > 0) {
+            const pnlPercent = ((this.state.currentPrice - this.state.position.entryPrice) / this.state.position.entryPrice) * 100;
+            const pnlUsdt = (this.state.currentPrice - this.state.position.entryPrice) * this.state.position.quantity;
+            statusPayload.unrealizedPnl = {
+                percent: pnlPercent,
+                usdt: pnlUsdt
+            };
+        }
+        return statusPayload;
     }
 }
 
