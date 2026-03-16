@@ -1,6 +1,6 @@
 // c:\Users\ANTHONY\Downloads\sistema_crip\src\BitgetTraderV2.tsx
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { FiKey, FiLock, FiShield, FiDollarSign, FiActivity, FiTerminal, FiSettings, FiPlay, FiTrendingUp, FiCheckCircle, FiBriefcase, FiTarget, FiInfo, FiCpu, FiList, FiXCircle, FiClock } from 'react-icons/fi';
+import { FiKey, FiLock, FiShield, FiDollarSign, FiActivity, FiTerminal, FiSettings, FiPlay, FiTrendingUp, FiBriefcase, FiCpu, FiList, FiXCircle, FiClock } from 'react-icons/fi';
 import CryptoJS from 'crypto-js';
 import { useBitgetSocket, type WebSocketMessage } from './useBitgetSocket';
 import { processStream, type Candle } from './marketData';
