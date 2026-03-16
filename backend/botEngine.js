@@ -2,6 +2,7 @@
 const WebSocket = require('ws');
 const crypto = require('crypto');
 const { getSignalForTimeframe, getFinalSignal } = require('./strategy');
+const { evaluateScalpingBuy, evaluateScalpingSell } = require('./scalpingStrategy');
 
 class BotEngine {
     constructor(apiKey, secretKey, passphrase) {
@@ -18,7 +19,7 @@ class BotEngine {
             status: 'IDLE', // IDLE, ANALYZING, IN_POSITION
             tradeMode: 'balanced',
             candles: { '5m': [], '1h': [], '4h': [] },
-            candles1m: [], // Buffer para agregación
+            candles1mHistory: [], // Buffer persistente para estrategias de 1m
             currentPrice: 0,
             trailingStop: null,
             position: null, // { entryPrice, size, quantity }
@@ -43,6 +44,37 @@ class BotEngine {
 
     async loadHistoricalData() {
         this.log("⏳ Cargando datos históricos de velas...");
+
+        // --- LÓGICA EXCLUSIVA PARA MODO SCALPING ---
+        // Si estamos en modo scalping, NO cargamos velas de 4h/1h. 
+        // Solo necesitamos historial reciente de 1m para detectar máximos y mínimos.
+        if (this.state.tradeMode === 'scalping') {
+            try {
+                const url = `http://localhost:3001/api/historical-candles?symbol=${this.config.symbol}&granularity=1min&limit=100`;
+                const res = await fetch(url);
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                
+                const data = await res.json();
+                
+                // Ordenamos por timestamp ascendente (más viejo -> más nuevo) para que coincida con el flujo del WebSocket .push()
+                const candles = data.map(c => ({ 
+                    timestamp: c[0], 
+                    open: parseFloat(c[1]), 
+                    high: parseFloat(c[2]), 
+                    low: parseFloat(c[3]), 
+                    close: parseFloat(c[4]), 
+                    volume: parseFloat(c[5]) 
+                })).sort((a, b) => parseInt(a.timestamp) - parseInt(b.timestamp));
+
+                this.state.candles1mHistory = candles;
+                this.log(`✅ [MODO SCALPING] ${candles.length} velas de 1m cargadas. Listo para operar inmediatamente.`);
+            } catch (e) {
+                this.log(`❌ Error cargando historial para Scalping: ${e.message}`);
+            }
+            return; // Salimos de la función aquí. No cargamos nada más.
+        }
+
+        // --- LÓGICA PARA MODOS DE TENDENCIA (Conservative, Balanced, Aggressive) ---
         const timeframes = {
             '5m': '5min',
             '1h': '1h',
@@ -92,6 +124,7 @@ class BotEngine {
             if (options.tradeMode) {
                 this.state.tradeMode = options.tradeMode;
             }
+            this.state.candles1mHistory = []; // Limpiar historial en cada inicio
             await this.loadHistoricalData();
             this.state.status = 'ANALYZING';
             this.connectWebSocket();
@@ -109,8 +142,28 @@ class BotEngine {
         }
         this.state.status = 'IDLE';
         this.closeWebSocket();
+        this.state.candles1mHistory = []; // Limpiar historial al parar
         clearInterval(this.heartbeatInterval);
         this.log("🛑 [BOT ENGINE] Detenido.");
+        return true;
+    }
+
+    async panicStop() {
+        this.log("🚨 [FRENO DE MANO] Detención de emergencia solicitada.");
+        
+        // 1. Si hay posición abierta, vender a mercado inmediatamente
+        if (this.state.status === 'IN_POSITION') {
+            this.log("📉 [FRENO DE MANO] Intentando cerrar posición a mercado...");
+            // Forzamos venta inmediata ignorando lógica de estrategia
+            await this.executeSell();
+        }
+        
+        // 2. Forzar detención completa y limpieza
+        this.state.status = 'IDLE';
+        this.closeWebSocket();
+        this.state.candles1mHistory = [];
+        clearInterval(this.heartbeatInterval);
+        this.log("🛑 [FRENO DE MANO] Bot detenido y desconectado correctamente.");
         return true;
     }
 
@@ -176,57 +229,54 @@ class BotEngine {
         };
 
         this.log(`📡 Vela recibida 1m | precio: ${candle.close}`);
-
         this.state.currentPrice = candle.close;
 
-        // detectar breakout en tiempo real en cada tick
-        this.detectRealtimeBreakout(candle);
-
-        // --- Logic for closed 1-minute candles ---
+        // --- Candle History Management (for all strategies) ---
         if (isCandleClosed) {
             this.log(`⏱ Vela 1m cerrada`);
+            // Agrega para timeframes largos (5m, 1h, 4h)
             this.aggregateCandles(candle);
+            
+            // Mantiene historial de velas de 1m para scalping
+            this.state.candles1mHistory.push(candle);
+            if (this.state.candles1mHistory.length > 60) { // Mantiene la última hora
+                this.state.candles1mHistory.shift();
+            }
+        }
 
-            // analizar cada minuto
+        // --- ENRUTADOR DE ESTRATEGIAS ---
+        if (this.state.tradeMode === 'scalping') {
+            // SCALPING STRATEGY (High-Frequency, runs on every tick)
             if (this.state.status === 'ANALYZING') {
-                this.evaluateStrategy();
+                const signal = evaluateScalpingBuy(this.state, candle, this.log.bind(this));
+                if (signal === 'EXECUTE_BUY') {
+                    this.executeBuy();
+                }
+            } else if (this.state.status === 'IN_POSITION') {
+                const signal = evaluateScalpingSell(this.state, candle, this.log.bind(this));
+                if (signal === 'EXECUTE_SELL') {
+                    this.executeSell();
+                }
             }
-
-            // Manage trailing stop update on closed 1m candles
-            if (this.state.status === 'IN_POSITION') {
-                this.updateTrailingStop(candle);
+        } else { // Estrategias de Tendencia/Breakout
+            if (this.state.status === 'ANALYZING') {
+                // Real-time breakout detection (runs on every tick)
+                this.detectRealtimeBreakout(candle);
+                
+                // Multi-timeframe analysis (runs only on 1m candle close)
+                if (isCandleClosed) {
+                    this.evaluateStrategy();
+                }
             }
         }
 
-        // --- Logic for every tick (including closed candles) ---
-        // Always check the stop loss for safety, regardless of candle state
+        // --- GESTIÓN DE POSICIÓN UNIVERSAL (APLICA A TODAS LAS ESTRATEGIAS SI ESTÁ EN POSICIÓN) ---
         if (this.state.status === 'IN_POSITION') {
+            // Siempre verifica el Stop Loss en cada tick para máxima seguridad
             this.checkStopLoss(candle);
-        }
-    }
-
-    aggregateCandles(new1mCandle) {
-        // Lógica simplificada de agregación (debería ser más robusta para producción)
-        // Aquí asumimos que tenemos datos históricos cargados previamente (ver loadHistorical en server.js)
-        const timeframes = { '5m': 5, '1h': 60, '4h': 240 };
-        
-        for (const [tf, minutes] of Object.entries(timeframes)) {
-            const candleArray = this.state.candles[tf];
-            const interval = minutes * 60 * 1000;
-            const candleTime = parseInt(new1mCandle.timestamp);
-            const candleTimestamp = Math.floor(candleTime / interval) * interval;
-
-            if (candleArray.length > 0 && candleArray[0].timestamp == candleTimestamp.toString()) {
-                // Actualizar vela actual
-                candleArray[0].high = Math.max(candleArray[0].high, new1mCandle.high);
-                candleArray[0].low = Math.min(candleArray[0].low, new1mCandle.low);
-                candleArray[0].close = new1mCandle.close;
-                candleArray[0].volume += new1mCandle.volume;
-            } else {
-                // Nueva vela
-                const newTfCandle = { ...new1mCandle, timestamp: candleTimestamp.toString() };
-                candleArray.unshift(newTfCandle);
-                if (candleArray.length > 200) candleArray.pop();
+            // Actualiza el Trailing Stop solo en velas cerradas para evitar movimientos erráticos
+            if (isCandleClosed) {
+                this.updateTrailingStop(candle);
             }
         }
     }
@@ -270,7 +320,7 @@ class BotEngine {
                 signals['1h'].timeframeBias === 'BULLISH'; // Confirmación de tendencia mayor
 
             if (breakout) {
-                this.log("🚀 BREAKOUT (en cierre de vela) detectado con volumen y confirmación");
+                this.log("🚀 BREAKOUT (cierre de vela) detectado con volumen y confirmación");
                 this.executeBuy();
                 return;
             }
@@ -302,7 +352,7 @@ class BotEngine {
             candle.close > prev5m.high &&
             candle.close > candle.open
         ) {
-            this.log(`⚡ BREAKOUT EN TIEMPO REAL detectado en ${candle.close} (superando máximo anterior de ${prev5m.high})`);
+            this.log(`⚡ BREAKOUT (tiempo real) detectado en ${candle.close} (superando máximo anterior de ${prev5m.high})`);
             this.executeBuy();
         }
     }
@@ -310,6 +360,7 @@ class BotEngine {
     async executeBuy() {
         // Prevenir compras múltiples si ya hay una en curso o una posición abierta
         if (this.state.status !== 'ANALYZING') return;
+        if (this.state.position) return; // Ya en posición
 
         this.state.status = 'BUYING'; // Bloquear estado para evitar compras concurrentes
         this.log("🎯 [BOT ENGINE] Señal de COMPRA detectada. Ejecutando orden real...");
@@ -353,6 +404,7 @@ class BotEngine {
 
             this.log(`❌ Error crítico enviando orden BUY: ${err.message}`);
             this.state.status = 'ANALYZING'; // Revertir estado si hay error de red
+            this.state.position = null; // Asegurarse de que no haya posición fantasma
         }
     }
 
@@ -361,7 +413,7 @@ class BotEngine {
         if (!this.state.position || !this.state.trailingStop) return;
 
         if (candle.close <= this.state.trailingStop) {
-            this.log(`📉 [TICK] Stop Loss alcanzado en ${this.state.trailingStop.toFixed(2)}. Vendiendo...`);
+            this.log(`📉 Stop Loss alcanzado en ${this.state.trailingStop.toFixed(2)}. Vendiendo...`);
             this.executeSell();
         }
     }
@@ -379,7 +431,7 @@ class BotEngine {
             
             if (newStop > this.state.trailingStop) {
                 this.state.trailingStop = newStop;
-                this.log(`📈 [CANDLE CLOSE] Trailing Stop actualizado: ${newStop.toFixed(2)}`);
+                this.log(`📈 Trailing Stop actualizado: ${newStop.toFixed(2)}`);
             }
         }
     }
@@ -415,6 +467,7 @@ class BotEngine {
         } catch (err) {
 
             this.log(`❌ Error enviando orden SELL: ${err.message}`);
+            // Considerar qué hacer si la venta falla (ej. reintentar, alertar)
 
         }
     }

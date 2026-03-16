@@ -20,7 +20,7 @@ const BitgetTraderV2: React.FC = () => {
 
   // --- ESTADOS DEL BOT ---
   const [botStatus, setBotStatus] = useState<BotStatus>('IDLE');
-  const [tradeMode, setTradeMode] = useState<'conservative' | 'balanced' | 'aggressive'>('balanced');
+  const [tradeMode, setTradeMode] = useState<'conservative' | 'balanced' | 'aggressive' | 'scalping'>('balanced');
   const [logs, setLogs] = useState<string[]>([]);
   const [currentPrice, setCurrentPrice] = useState<number>(0);
   const [trailingStop, setTrailingStop] = useState<number | null>(null);
@@ -260,6 +260,27 @@ try {
     refreshOpenPositions();
   };
 
+  // --- FUNCIÓN DE PÁNICO (FRENO DE MANO) ---
+  const handlePanicStop = async () => {
+    const confirm = window.confirm("🚨 ¿ACTIVAR FRENO DE EMERGENCIA?\n\nEsto venderá TODAS las posiciones a mercado y detendrá el bot inmediatamente.\n¿Estás seguro?");
+    if (!confirm) return;
+
+    addLog("🚨 ¡ENVIANDO SEÑAL DE PÁNICO AL SERVIDOR! 🚨");
+    try {
+      const res = await fetch('http://31.97.253.128:3001/api/bot/panic', { method: 'POST' });
+      if (res.ok) {
+        const data = await res.json();
+        addLog(`🛑 ${data.message}`);
+        setBotStatus('IDLE');
+        setTrailingStop(null);
+      } else {
+        addLog("❌ Error: El servidor no pudo ejecutar el freno de mano.");
+      }
+    } catch (e) {
+      addLog("❌ Error CRÍTICO de conexión al intentar frenar.");
+    }
+  };
+
   // --- SOLO VISUALIZACIÓN (WEBSOCKET) ---
   useEffect(() => {
     if (!lastMessage) return;
@@ -393,7 +414,7 @@ try {
           <div className="trade-mode-selector">
             <span>Modo de Riesgo:</span>
             <div className="radio-group">
-                {(['conservative', 'balanced', 'aggressive'] as const).map(mode => (
+                {(['conservative', 'balanced', 'aggressive', 'scalping'] as const).map(mode => (
                     <label key={mode}>
                         <input
                             type="radio"
@@ -408,9 +429,19 @@ try {
             </div>
           </div>
           <div className="risk-params">
-            <div className="param-item"><span>Riesgo por Op.:</span> <span>10%</span></div>
-            <div className="param-item"><span>Trades/Día:</span> <span>{{ conservative: 3, balanced: 6, aggressive: 10 }[tradeMode]}</span></div>
-            <div className="param-item"><span>Score Mínimo:</span> <span>{{ conservative: 4, balanced: 3, aggressive: 2 }[tradeMode]}</span></div>
+            {tradeMode === 'scalping' ? (
+                <>
+                    <div className="param-item"><span>Estrategia:</span> <span>Scalping de alta frecuencia</span></div>
+                    <div className="param-item"><span>Entrada:</span> <span>Dip desde máximo reciente (0.2%)</span></div>
+                    <div className="param-item"><span>Salida (TP):</span> <span>+0.5% Ganancia</span></div>
+                </>
+            ) : (
+                <>
+                    <div className="param-item"><span>Riesgo por Op.:</span> <span>10%</span></div>
+                    <div className="param-item"><span>Trades/Día:</span> <span>{{ conservative: 3, balanced: 6, aggressive: 10 }[tradeMode]}</span></div>
+                    <div className="param-item"><span>Score Mínimo:</span> <span>{{ conservative: 4, balanced: 3, aggressive: 2 }[tradeMode]}</span></div>
+                </>
+            )}
           </div>
           <button 
             onClick={handleStartBot} 
@@ -420,6 +451,26 @@ try {
             <FiPlay /> 
             {botStatus === 'IDLE' ? 'INICIAR BOT' : 'DETENER BOT'}
           </button>
+
+          {botStatus !== 'IDLE' && (
+              <button 
+                onClick={handlePanicStop} 
+                className="btn-operate"
+                style={{ 
+                  marginTop: '15px', 
+                  backgroundColor: '#dc3545', 
+                  color: 'white', 
+                  border: '2px solid #b02a37',
+                  fontWeight: 'bold',
+                  letterSpacing: '1px',
+                  boxShadow: '0 4px 12px rgba(220, 53, 69, 0.4)',
+                  padding: '12px',
+                  textTransform: 'uppercase'
+                }}
+              >
+                <FiXCircle style={{ marginRight: '8px', fontSize: '1.2em' }} /> FRENO DE EMERGENCIA
+              </button>
+          )}
         </div>
       </div>
 

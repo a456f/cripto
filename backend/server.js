@@ -5,7 +5,7 @@ require('dotenv').config({ path: __dirname + '/../.env' });
 const { Anthropic } = require('@anthropic-ai/sdk');
 const BotEngine = require('./botEngine');
 
-const BOT_VERSION = "3.3";
+const BOT_VERSION = "3.4";
 
 const app = express();
 app.use(express.json());
@@ -324,6 +324,15 @@ app.post('/api/bot/stop', (req, res) => {
     const stopped = bot.stop();
     if (stopped) res.send({ message: 'Bot detenido' });
     else res.status(400).send({ message: 'No se pudo detener (¿Posición abierta?)' });
+});
+
+app.post('/api/bot/panic', async (req, res) => {
+    try {
+        await bot.panicStop();
+        res.send({ message: 'Freno de mano ejecutado. Bot detenido y posiciones cerradas.' });
+    } catch (e) {
+        res.status(500).send({ error: e.message });
+    }
 });
 
 app.get('/api/bot/status', (req, res) => {
