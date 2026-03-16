@@ -534,7 +534,7 @@ class BotEngine {
                 this.log(`ℹ️ Venta omitida. No hay suficiente BTC para vender (${availableBtc}). Reseteando estado.`);
             } else {
                 this.log(`💸 Vendiendo todo el balance de BTC: ${availableBtc.toFixed(8)} BTC.`);
-                const quantity = availableBtc;
+                const quantity = availableBtc * 0.98;
 
             const res = await fetch("http://localhost:3001/api/place-order", {
                 method: "POST",
