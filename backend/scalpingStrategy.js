@@ -1,73 +1,77 @@
 // backend/scalpingStrategy.js
 
-// --- Parámetros de la Estrategia de Scalping ---
-// Centralizar los parámetros aquí facilita su ajuste y mejora la legibilidad. Estos son los "ajustes finos" del motor.
+// --- Parámetros de la Estrategia de Scalping de Alta Frecuencia ---
+// Estos parámetros están optimizados para una operativa muy activa, buscando
+// capturar micro-movimientos del mercado.
 const SCALPING_PARAMS = {
-    // Porcentaje de caída desde el máximo reciente para considerar una "compra barata".
-    DIP_PERCENT: 0.002, // 0.2%
+    // Porcentaje de caída desde el máximo reciente para activar una posible compra.
+    // Un valor bajo (0.08%) busca "micro-dips".
+    DIP_PERCENT: 0.0008, // 0.08%
     
-    // Porcentaje de ganancia desde el precio de entrada para tomar ganancias.
-    TAKE_PROFIT_PERCENT: 0.006, // 0.6% - Un poco más alto para cubrir fees y asegurar ganancia.
+    // Porcentaje de ganancia sobre el precio de compra para ejecutar la venta (Take Profit).
+    // Un valor bajo (0.25%) asegura ventas rápidas.
+    TAKE_PROFIT_PERCENT: 0.0025, // 0.25%
 
-    // Cuántas velas de 1m hacia atrás mirar para encontrar el máximo reciente.
+    // Período de velas de 1m para calcular el máximo reciente.
+    // 5 minutos es un buen balance para reaccionar a la acción de precio inmediata.
     LOOKBACK_PERIOD: 5,
-
-    // Cuántas velas de 1m hacia atrás mirar para calcular el volumen promedio.
-    VOLUME_LOOKBACK: 10,
-
-    // Multiplicador para confirmar que el volumen actual es significativo.
-    // Un valor de 1.2 significa que el volumen debe ser un 20% superior al promedio.
-    VOLUME_MULTIPLIER: 1.5, // Más estricto para buscar picos de volumen más claros.
 };
 
 /**
- * Evalúa si hay una señal de compra para la estrategia de scalping de alta frecuencia.
- * Lógica Mejorada:
- * 1. Busca una pequeña caída de precio (dip) desde un máximo reciente.
- * 2. Confirma que el tick actual tiene un volumen superior al promedio para validar el interés del mercado.
- * 3. Confirma que la vela de 1 minuto actual muestra un rebote (el precio actual es mayor que su apertura).
+ * Evalúa la señal de COMPRA para la estrategia de scalping de alta frecuencia.
+ * Esta función se ejecuta en CADA TICK de precio para una reacción en milisegundos.
+ *
+ * Lógica de Compra:
+ * 1. Identifica el precio más alto de los últimos 5 minutos (usando el historial de velas de 1m).
+ * 2. Calcula un "precio gatillo" un 0.08% por debajo de ese máximo.
+ * 3. Si el precio actual del tick cae por debajo de ese gatillo, la condición de "dip" se cumple.
+ * 4. **Filtro de Confirmación**: Para evitar comprar mientras el precio sigue cayendo,
+ *    se exige que la vela de 1 minuto actual sea alcista (precio de cierre > precio de apertura).
+ *    Esto confirma un rebote inmediato y aumenta la probabilidad de éxito.
  * 
- * @param {object} state - El estado actual del bot, incluyendo el historial de velas.
- * @param {object} candle - El tick de vela de 1m más reciente.
+ * @param {object} state - El estado actual del bot (proporcionado por botEngine).
+ * @param {object} candle - El tick de vela de 1m actual (datos en tiempo real).
  * @param {function} log - La función para registrar mensajes.
  * @returns {string|null} 'EXECUTE_BUY' si las condiciones se cumplen, de lo contrario null.
  */
 function evaluateScalpingBuy(state, candle, log) {    
-    // Se necesita un historial mínimo de velas cerradas para poder calcular promedios y máximos.
+    // Se necesita un historial mínimo de velas cerradas para poder calcular el máximo reciente.
     const history = state.candles1mHistory;
-    if (history.length < Math.max(SCALPING_PARAMS.LOOKBACK_PERIOD, SCALPING_PARAMS.VOLUME_LOOKBACK)) {
+    if (history.length < SCALPING_PARAMS.LOOKBACK_PERIOD) {
         return null;
     }
 
-    // 1. Identificar el máximo reciente usando el historial de velas cerradas.
+    // 1. Identificar el máximo reciente del historial.
     const recentCandles = history.slice(-SCALPING_PARAMS.LOOKBACK_PERIOD);
     const maxHigh = Math.max(...recentCandles.map(c => c.high));
     
-    // 2. Calcular el precio de activación para la compra en el "dip".
+    // 2. Calcular el precio de activación para la compra en el "micro-dip".
     const buyTriggerPrice = maxHigh * (1 - SCALPING_PARAMS.DIP_PERCENT);
 
-    // 3. Calcular el volumen promedio reciente del historial para usarlo como filtro.
-    const volumeCandles = history.slice(-SCALPING_PARAMS.VOLUME_LOOKBACK);
-    const avgVolume = volumeCandles.reduce((acc, c) => acc + c.volume, 0) / volumeCandles.length;
-    
     // --- CONDICIÓN DE COMPRA ---
-    // a) El precio actual ha caído por debajo del gatillo.
+    // a) ¿El precio actual ha caído al nivel del dip?
     const isPriceDip = candle.close <= buyTriggerPrice;
-    // b) El volumen del tick actual es significativamente mayor que el promedio.
-    const hasVolumeConfirmation = candle.volume > (avgVolume * SCALPING_PARAMS.VOLUME_MULTIPLIER);
-    // c) La vela de 1m actual es verde, confirmando un rebote/momentum alcista inmediato.
+    // b) ¿Hay momentum de rebote inmediato (la vela de 1m actual es verde)?
     const hasMomentumConfirmation = candle.close > candle.open;
 
-    if (isPriceDip && hasVolumeConfirmation && hasMomentumConfirmation) {
-        log(`⚡️ SCALPING BUY: Dip con rebote y volumen. Gatillo: <=${buyTriggerPrice.toFixed(2)}, Precio: ${candle.close.toFixed(2)}, Volumen: ${candle.volume.toFixed(0)} > Promedio: ${avgVolume.toFixed(0)}.`);
+    if (isPriceDip && hasMomentumConfirmation) {
+        log(`⚡️ SCALPING BUY: Dip con rebote detectado. Gatillo: <=${buyTriggerPrice.toFixed(2)}, Precio: ${candle.close.toFixed(2)}.`);
         return 'EXECUTE_BUY';
     }
+
     return null;
 }
 
 /**
- * Evalúa si hay una señal de venta para la estrategia de scalping (Take Profit).
- * La lógica de Stop Loss es universal y se gestiona en `botEngine.js` para máxima seguridad.
+ * Evalúa la señal de VENTA para la estrategia de scalping (Toma de Ganancias).
+ * Esta función se ejecuta en CADA TICK de precio para una salida rápida.
+ *
+ * Lógica de Venta:
+ * 1. Calcula el precio objetivo de Take Profit (precio de entrada + 0.25%).
+ * 2. Si el precio actual del tick alcanza o supera ese objetivo, se ejecuta la venta.
+ *
+ * Nota: El Stop Loss es una red de seguridad universal gestionada por `botEngine.js`
+ * y se aplica a todas las estrategias para proteger el capital.
  * 
  * @param {object} state - El estado actual del bot, incluyendo la posición abierta.
  * @param {object} candle - El tick de vela de 1m actual.
