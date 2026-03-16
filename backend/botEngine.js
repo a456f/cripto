@@ -541,7 +541,7 @@ class BotEngine {
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     side: "sell",
-                    size: quantity.toFixed(8) // Usar alta precisión para cantidad de crypto
+                    size: quantity.toFixed(6) // Usar alta precisión para cantidad de crypto
                 })
             });
 
