@@ -26,11 +26,12 @@ class BotEngine {
             logs: []
         };
 
-        this.config = {
-            symbol: 'BTCUSDT',
-            riskPercent: 0.1,
-            stopLossPercent: 0.02
-        };
+    this.config = {
+    symbol: 'BTCUSDT',
+    riskPercent: 0.1,
+    stopLossPercent: 0.02,
+    targetBalance: 25
+};
     }
 
     async getAssets() {
@@ -554,6 +555,22 @@ class BotEngine {
             }
 
             this.log("💸 VENTA REAL EJECUTADA");
+            // verificar si se alcanzó el balance objetivo
+const assetsAfter = await this.getAssets();
+const usdtAfter = assetsAfter.find(a => a.coin === 'USDT');
+
+const balance = usdtAfter ? parseFloat(usdtAfter.available) : 0;
+
+if (balance >= this.config.targetBalance) {
+
+    this.log(`🎯 OBJETIVO ALCANZADO: ${balance.toFixed(2)} USDT`);
+
+    this.log("🛑 BOT DETENIDO POR PROFIT TARGET");
+
+    this.stop();
+
+    return;
+}
             }
 
             this.state.status = "ANALYZING";

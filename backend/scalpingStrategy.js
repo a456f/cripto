@@ -2,18 +2,15 @@
 
 const SCALPING_PARAMS = {
 
-    // compra con movimiento mínimo
-    DIP_PERCENT: 0.00005,      // 0.005%
+    DIP_PERCENT: 0.0001,      // 0.01%
 
-    BREAKOUT_PERCENT: 0.00005, // 0.005%
+    BREAKOUT_PERCENT: 0.0001, // 0.01%
 
-    // vender muy rápido
-    TAKE_PROFIT_PERCENT: 0.0004, // 0.04%
+    TAKE_PROFIT_PERCENT: 0.0015, // 0.15%
 
-    // proteger rápido
-    STOP_LOSS_PERCENT: 0.0004,   // 0.04%
+    STOP_LOSS_PERCENT: 0.001,   // 0.10%
 
-    LOOKBACK_PERIOD: 2
+    LOOKBACK_PERIOD: 3
 };
 
 
