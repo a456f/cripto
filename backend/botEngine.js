@@ -392,7 +392,7 @@ class BotEngine {
             this.state.position = {
                 entryPrice: entry,
                 size: sizeUSDT,
-                quantity: sizeUSDT / entry,
+                quantity: Number((sizeUSDT / entry).toFixed(6)),
                 highPrice: entry
             };
 
@@ -440,7 +440,7 @@ class BotEngine {
 
         try {
 
-            const quantity = this.state.position.quantity;
+            const quantity = Number(this.state.position.quantity.toFixed(6));
 
             const res = await fetch("http://localhost:3001/api/place-order", {
                 method: "POST",
