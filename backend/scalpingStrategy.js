@@ -2,13 +2,18 @@
 
 const SCALPING_PARAMS = {
 
-    DIP_PERCENT: 0.00015,      // 0.015%
-    BREAKOUT_PERCENT: 0.00015, // 0.015%
+    // compra con movimiento mínimo
+    DIP_PERCENT: 0.00005,      // 0.005%
 
-    TAKE_PROFIT_PERCENT: 0.0006, // 0.06%
-    STOP_LOSS_PERCENT: 0.0005,   // 0.05%
+    BREAKOUT_PERCENT: 0.00005, // 0.005%
 
-    LOOKBACK_PERIOD: 4
+    // vender muy rápido
+    TAKE_PROFIT_PERCENT: 0.0004, // 0.04%
+
+    // proteger rápido
+    STOP_LOSS_PERCENT: 0.0004,   // 0.04%
+
+    LOOKBACK_PERIOD: 2
 };
 
 
@@ -27,25 +32,20 @@ function evaluateScalpingBuy(state, candle, log) {
     const recent = history.slice(-SCALPING_PARAMS.LOOKBACK_PERIOD);
 
     const maxHigh = Math.max(...recent.map(c => c.high));
-    const minLow = Math.min(...recent.map(c => c.low));
 
     const dipTrigger = maxHigh * (1 - SCALPING_PARAMS.DIP_PERCENT);
     const breakoutTrigger = maxHigh * (1 + SCALPING_PARAMS.BREAKOUT_PERCENT);
 
-    const momentumUp =
-        candle.close > candle.open;
+    // comprar en micro movimiento
+    if (candle.close <= dipTrigger) {
 
-    // comprar en micro dip
-    if (candle.close <= dipTrigger && momentumUp) {
-
-        log(`⚡ MICRO BUY DIP → ${candle.close}`);
+        log(`⚡ BUY MICRO DIP → ${candle.close}`);
         return 'EXECUTE_BUY';
     }
 
-    // comprar en micro breakout
-    if (candle.close >= breakoutTrigger && momentumUp) {
+    if (candle.close >= breakoutTrigger) {
 
-        log(`🚀 MICRO BUY BREAKOUT → ${candle.close}`);
+        log(`🚀 BUY MICRO BREAKOUT → ${candle.close}`);
         return 'EXECUTE_BUY';
     }
 
@@ -70,19 +70,18 @@ function evaluateScalpingSell(state, candle, log) {
 
     if (candle.close >= takeProfit) {
 
-        log(`💰 MICRO TAKE PROFIT → ${candle.close}`);
+        log(`💰 SELL QUICK PROFIT → ${candle.close}`);
         return 'EXECUTE_SELL';
     }
 
     if (candle.close <= stopLoss) {
 
-        log(`🛑 MICRO STOP LOSS → ${candle.close}`);
+        log(`🛑 SELL QUICK STOP → ${candle.close}`);
         return 'EXECUTE_SELL';
     }
 
     return null;
 }
-
 
 module.exports = {
     evaluateScalpingBuy,
