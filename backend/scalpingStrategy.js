@@ -2,15 +2,15 @@
 
 const SCALPING_PARAMS = {
 
-    DIP_PERCENT: 0.0001,      // 0.01%
+    DIP_PERCENT: 0.001,      // 0.1% (Ajustado para evitar ruido)
 
-    BREAKOUT_PERCENT: 0.0001, // 0.01%
+    BREAKOUT_PERCENT: 0.001, // 0.1%
 
-    TAKE_PROFIT_PERCENT: 0.0015, // 0.15%
+    TAKE_PROFIT_PERCENT: 0.004, // 0.4% (Cubre comisiones 0.2% + ganancia neta)
 
-    STOP_LOSS_PERCENT: 0.001,   // 0.10%
+    STOP_LOSS_PERCENT: 0.002,   // 0.2%
 
-    LOOKBACK_PERIOD: 3
+    LOOKBACK_PERIOD: 5
 };
 
 
