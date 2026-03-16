@@ -2,13 +2,13 @@
 
 const SCALPING_PARAMS = {
 
-    DIP_PERCENT: 0.001,      // 0.1% (Ajustado para evitar ruido)
+    DIP_PERCENT: 0.001,
+    BREAKOUT_PERCENT: 0.001,
 
-    BREAKOUT_PERCENT: 0.001, // 0.1%
-
-    TAKE_PROFIT_PERCENT: 0.004, // 0.4% (Cubre comisiones 0.2% + ganancia neta)
-
+    TAKE_PROFIT_PERCENT: 0.003, // 0.3%
     STOP_LOSS_PERCENT: 0.002,   // 0.2%
+
+    TRAILING_PERCENT: 0.0015,   // 0.15%
 
     LOOKBACK_PERIOD: 5
 };
@@ -33,16 +33,17 @@ function evaluateScalpingBuy(state, candle, log) {
     const dipTrigger = maxHigh * (1 - SCALPING_PARAMS.DIP_PERCENT);
     const breakoutTrigger = maxHigh * (1 + SCALPING_PARAMS.BREAKOUT_PERCENT);
 
-    // comprar en micro movimiento
-    if (candle.close <= dipTrigger) {
+    // BUY DIP con rebote real
+    if (candle.low <= dipTrigger && candle.close > candle.open) {
 
-        log(`⚡ BUY MICRO DIP → ${candle.close}`);
+        log(`⚡ BUY DIP REVERSAL → ${candle.close}`);
         return 'EXECUTE_BUY';
     }
 
-    if (candle.close >= breakoutTrigger) {
+    // BUY BREAKOUT fuerte
+    if (candle.close >= breakoutTrigger && candle.close > candle.open) {
 
-        log(`🚀 BUY MICRO BREAKOUT → ${candle.close}`);
+        log(`🚀 BUY BREAKOUT → ${candle.close}`);
         return 'EXECUTE_BUY';
     }
 
@@ -65,20 +66,40 @@ function evaluateScalpingSell(state, candle, log) {
     const takeProfit = entry * (1 + SCALPING_PARAMS.TAKE_PROFIT_PERCENT);
     const stopLoss = entry * (1 - SCALPING_PARAMS.STOP_LOSS_PERCENT);
 
+    // guardar máximo alcanzado
+    if (!state.maxPrice || candle.high > state.maxPrice) {
+        state.maxPrice = candle.high;
+    }
+
+    const trailingStop = state.maxPrice * (1 - SCALPING_PARAMS.TRAILING_PERCENT);
+
+    // TAKE PROFIT
     if (candle.close >= takeProfit) {
 
-        log(`💰 SELL QUICK PROFIT → ${candle.close}`);
+        log(`💰 SELL TAKE PROFIT → ${candle.close}`);
+        state.maxPrice = null;
         return 'EXECUTE_SELL';
     }
 
+    // TRAILING PROFIT
+    if (state.maxPrice && candle.close <= trailingStop && state.maxPrice > entry) {
+
+        log(`📉 SELL TRAILING PROFIT → ${candle.close}`);
+        state.maxPrice = null;
+        return 'EXECUTE_SELL';
+    }
+
+    // STOP LOSS
     if (candle.close <= stopLoss) {
 
-        log(`🛑 SELL QUICK STOP → ${candle.close}`);
+        log(`🛑 SELL STOP LOSS → ${candle.close}`);
+        state.maxPrice = null;
         return 'EXECUTE_SELL';
     }
 
     return null;
 }
+
 
 module.exports = {
     evaluateScalpingBuy,
